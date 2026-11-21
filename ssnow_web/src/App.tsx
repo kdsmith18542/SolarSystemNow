@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { LayoutDashboard, List, Map, Sun, Moon, Rocket, Cloud, Settings as SettingsIcon } from 'lucide-react';
 import Dashboard from './views/Dashboard';
 import Events from './views/Events';
@@ -37,6 +37,21 @@ const VIEWS: Record<string, React.ElementType> = {
 export default function App() {
   const [tab, setTab] = useState('dashboard');
   const [refreshKey, setRefreshKey] = useState(0);
+  const [live, setLive] = useState(false);
+
+  // SSE live stream: server pushes ingest_complete + heartbeat.
+  // EventSource reconnects natively; any successful message = connected.
+  useEffect(() => {
+    const src = new EventSource('/api/stream/live');
+    src.onmessage = (ev) => {
+      setLive(true);
+      try {
+        if (JSON.parse(ev.data)?.type === 'ingest_complete') setRefreshKey((k) => k + 1);
+      } catch { /* heartbeat / non-JSON: ignore */ }
+    };
+    src.onerror = () => setLive(false);
+    return () => src.close();
+  }, []);
   return (
     <div className="flex h-screen overflow-hidden">
       <aside className="w-60 bg-slate-900 border-r border-slate-800 flex flex-col">
@@ -75,6 +90,12 @@ export default function App() {
         <header className="h-12 border-b border-slate-800 flex items-center justify-between px-4">
           <h1 className="text-lg font-semibold">{TABS.find((t) => t.id === tab)?.label}</h1>
           <div className="flex items-center gap-2">
+            <span
+              title={live ? 'Live stream connected — views auto-refresh on ingest' : 'Live stream offline'}
+              className={`px-2 py-1 text-xs rounded border ${live ? 'text-emerald-300 border-emerald-700 bg-emerald-950/50' : 'text-slate-500 border-slate-700'}`}
+            >
+              {live ? '● LIVE' : '○ offline'}
+            </span>
             <button
               className="px-3 py-1 text-xs bg-slate-800 hover:bg-slate-700 active:bg-slate-600 rounded text-slate-200 border border-slate-700 cursor-pointer"
               onClick={() => setRefreshKey((k) => k + 1)}

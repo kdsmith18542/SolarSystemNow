@@ -150,6 +150,19 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             logger.warning("View %d refresh failed: %s", index, exc)
 
+    def show_on_map(self, latitude: float, longitude: float) -> None:
+        """Center the Map tab on an event (from EventsView Show on Map)."""
+        try:
+            idx = VIEW_NAMES.index("Map")
+        except ValueError:
+            return
+        try:
+            self.views[idx].focus(latitude, longitude)
+        except Exception as exc:
+            logger.warning("Map focus failed: %s", exc)
+        self.sidebar.setCurrentRow(idx)
+        self.stack.setCurrentIndex(idx)
+
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key.Key_F11:
             self.toggle_streamer_mode()

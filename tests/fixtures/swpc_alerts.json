@@ -1,0 +1,14 @@
+[
+  {
+    "product_id": "ALTTP2",
+    "issue_datetime": "2026-11-20T12:04:00",
+    "message": "Space Weather Message Code: ALTTP2\nSerial Number: 1123\nIssue Time: 2026 Nov 20 1204 UTC\n\nALERT: Type II Radio Emission\nBegin Time: 2026 Nov 20 1150 UTC\nEstimated Velocity: 800 km/s\n\nDescription: Type II emissions occur in association with eruptions on the sun and typically indicate a coronal mass ejection is associated with a flare event.",
+    "regions": "Sun"
+  },
+  {
+    "product_id": "K0K",
+    "issue_datetime": "2026-11-20T18:00:00",
+    "message": "Space Weather Message Code: SUM10R\nSerial Number: 45\nIssue Time: 2026 Nov 20 1800 UTC\n\nSUMMARY: 10cm Radio Burst\nBegin Time: 2026 Nov 20 1730 UTC\nMaximum Time: 2026 Nov 20 1745 UTC\nEnd Time: 2026 Nov 20 1800 UTC\nDuration: 30 minutes\nPeak Flux: 120 sfu",
+    "regions": "Sun"
+  }
+]

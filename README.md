@@ -1,12 +1,13 @@
 # Solar System Now (ss-now)
 
-Linux desktop platform for reviewing **current and historical real data** about Earth and its neighborhood: earthquakes, volcanoes, storms, wildfires, floods, weather, space weather (Sun/Kp), and the Moon. No fabricated data, no server required, no hosting costs.
+Linux desktop + local web dashboard for reviewing **current and historical real data** about Earth and its solar neighborhood: earthquakes, tsunamis, volcanoes, storms, wildfires, floods, weather, tides, space weather (Kp, solar wind, IMF Bz, flares, protons, Dst), the Sun (SDO/LASCO imagery), the Moon, and near-Earth asteroids, comets, fireballs and impact risk. No fabricated data, no server required, no hosting costs.
 
 ## Architecture
 
-- `ssnow_core/` — pure-Python library: adapters, SQLite store, scheduler, CLI. No Qt imports (enforced by test).
-- `ssnow_desktop/` — PySide6/Qt GUI for Linux.
-- Data sources: USGS, NASA EONET, Open-Meteo, NOAA SWPC, NASA DONKI, NASA SDO imagery, Moon computed with Skyfield (JPL ephemeris).
+- `ssnow_core/` — pure-Python library: 32 ingestion adapters, SQLite store (WAL + R-Tree + notifications), scheduler, deterministic physics sims, CLI. No Qt imports (enforced by test).
+- `ssnow_desktop/` — PySide6/Qt GUI: Now, Events, Map, Sun, Moon, Asteroids, Sources, Settings. System-tray alerts, OBS streamer mode (F11).
+- `ssnow_web/` — FastAPI + React/Tailwind/MapLibre, SSE live stream, builds into `static/`.
+- Data sources (all free, public domain / permissive): USGS, NASA EONET, Open-Meteo, NOAA SWPC (Kp, X-ray, F10.7, RTSW wind/IMF, protons, Dst, solar cycle), NASA DONKI, JPL NeoWs/CAD/fireballs/Sentry, NOAA SPC outlooks, IEM storm reports, NWS alerts, OVATION aurora, NDBC tides, geomag, SDO/LASCO imagery, Skyfield Moon.
 - Local SQLite database + gzipped raw snapshots; steady-state storage is single-digit GB.
 
 ## Setup
@@ -14,7 +15,7 @@ Linux desktop platform for reviewing **current and historical real data** about 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e .[dev]
+pip install -e .[dev,web]
 ```
 
 ## Run
@@ -26,11 +27,22 @@ ssnow ingest
 # stats
 ssnow stats
 
+# prune snapshots & observations older than N days
+ssnow prune --days 90
+
 # launch desktop GUI
 ssnow gui
+
+# run a deterministic physics simulation (labels SIMULATION, never a forecast)
+ssnow sim --list
+ssnow sim --id flare_arrival --param cme_speed_km_s=800
+
+# web dashboard (needs npm run build in ssnow_web/ first)
+ssnow-web --port 8123
 ```
 
-Environment overrides: `SSNOW_DATA_DIR`, `SSNOW_CONFIG_DIR`, `SSNOW_CACHE_DIR`.
+Environment overrides: `SSNOW_DATA_DIR`, `SSNOW_CONFIG_DIR`, `SSNOW_CACHE_DIR`. Extra flags: `--log-level`.
+
 
 ## Packaging (Linux)
 
@@ -46,4 +58,4 @@ No CUDA or GPU toolkit is required. Ingest is HTTP/JSON; charts are Qt-painted; 
 
 ## Data integrity
 
-Missing data renders as missing; nothing is synthesized. Every view shows source attribution and upstream links. Simulations are deferred to Phase 2 behind a stub interface.
+Missing data renders as missing; nothing is synthesized. Every view shows source attribution and upstream links. Radar is a live overlay only (never stored). CME arrival figures are ballistic SIMULATIONs, always labelled as models — never presented as observations.

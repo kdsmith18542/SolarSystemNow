@@ -34,7 +34,7 @@ The core infrastructure and high-priority reliability fixes have been successful
   - Desktop map color-coded markers and frosted-glass legend.
   - SDO solar imagery served to the web frontend via `/api/sun/image`.
   - Desktop system tray alerts for significant earthquakes ($M \ge 6.0$) and geomagnetic storms ($Kp \ge 5.0$).
-- [x] **Verification**: All 50 unit/adapter/smoke tests pass cleanly (`pytest -v`).
+- [x] **Verification**: All 51 unit/adapter/smoke tests pass cleanly (`pytest -v`).
 
 ---
 
@@ -102,34 +102,36 @@ The core infrastructure and high-priority reliability fixes have been successful
 ### Milestone 2: Data & Offline Enrichment
 
 - [x] **Expand Seed Coverage for Offline Use**:
-  - Now 12 of 33 sources have bundled seed fixtures (USGS, EONET, Kp, CME, NeoWs, JPL CAD, fireball, SPC outlook, Dst, Sentry, solar cycle, LSR) so first-time offline users see quakes, hazards, Kp, CMEs, close approaches, bolides, outlooks AND storm indices.
+  - Now 28 of 33 sources seed offline (adds Kp forecast, SWPC alerts, X-ray, F10.7, RTSW wind/IMF, protons, GST, NWS alerts, aurora + 6 SDO/LASCO JPEGs). First launch shows quakes, hazards, Kp, CMEs, close approaches, bolides, outlooks, storm indices AND imagery. Unseedable by design: geomag/Open-Meteo/tides (need user locations/stations), Moon (computed live), DONKI FLR (disabled upstream).
 - [x] **Settings Multi-Location Management**:
   - Full UI display and removal of saved locations and tide stations with real-time persistence.
 - [x] **Events Detail Badges & Map Layer Toggles**:
   - `EventsView` detail dialog surfaces tsunami / PAGER / felt / NWS severity+expires+instruction / PHA / comet / CME speed badges (all previously ingested-but-hidden `extra_json`).
   - Desktop + web maps have smooth layer checkboxes (Quakes+Tsunami | Volcano+Fire | Storm/Flood/Alerts | Space weather | Other). Explicitly NOT a Google-Earth clone: Earth map stays 2D geographic; solar-system distances live in the separate Asteroids schematic. NEOs excluded from Earth map (no lat/lon) by design.
+- [x] **Events Table Sorting & Map Cross-Linking**:
+  - Desktop `EventsView` columns sort on click (sorting preserved across refresh); detail dialog has "Show on Map" (centers Map tab on the event, sticky until Reset). Web `Events.tsx` sorts by Time/Mag on header click.
 
 ---
 
 ### Milestone 3: Realtime Server-Client & Live Stream
 
 - [x] **Server-Sent Events (SSE) Stream in FastAPI**:
-  - Implemented `/api/stream/live` in `ssnow_web/api.py` with subscriber broadcasting on ingest cycles and heartbeat keep-alive.
+  - Implemented `/api/stream/live` in `ssnow_web/api.py` with subscriber broadcasting on ingest cycles and heartbeat keep-alive. Web header shows ● LIVE / ○ offline and auto-refreshes every view on `ingest_complete`.
 - [ ] **Remote Server Connection Option**:
-  - Allow the PySide6 desktop app to toggle between `[x] Standalone (local SQLite)` and `[ ] Remote Server (http://...)`.
-- [ ] **Docker Compose for Self-Hosting**:
-  - Provide a turnkey `docker-compose.yml` for running `ssnow-web` 24/7 on home servers, NAS devices, or Raspberry Pis.
+  - Allow the PySide6 desktop app to toggle between `[x] Standalone (local SQLite)` and `[ ] Remote Server (http://...)`. Deferred: needs an HTTP-backed Store abstraction (all views currently take a local `Store`).
+- [x] **Docker Compose for Self-Hosting**:
+  - `packaging/Dockerfile.web` + `packaging/docker-compose.yml` (`docker compose ... up -d`, data in `ssnow-data` volume). Compose config validated with `docker compose config`.
 
 ---
 
 ### Milestone 4: Packaging & Distribution
 
-- [ ] **AppImage Build Pipeline**:
-  - Run and verify `packaging/build_appimage.sh` with the updated codebase.
-- [ ] **Documentation Updates**:
-  - Update `README.md` to reflect that simulations (`ssnow sim`) are fully implemented and document new CLI commands (`ssnow prune`, `--log-level`).
-- [ ] **Dependency Hygiene**:
-  - Audit and clean up optional dependencies in `pyproject.toml`.
+- [x] **AppImage Build Pipeline**:
+  - Spec fixed (relative paths, `ssnow_core/data` bundled). Full PyInstaller build verified green; frozen GUI boots offscreen with no import errors. `appimagetool` final step needs its binary installed (not present here).
+- [x] **Documentation Updates**:
+  - `README.md` rewritten: 32 adapters, web dashboard, `prune`/`sim`/`ssnow-web` commands, data-integrity rules.
+- [x] **Dependency Hygiene**:
+  - `requirements.lock` regenerated from the working venv (was missing skyfield/uvicorn/respx).
 
 ---
 
@@ -151,7 +153,7 @@ The core infrastructure and high-priority reliability fixes have been successful
 | **HMI Magnetogram + Radar Overlay (live tiles, unstored)** | P2 | Completed | Core + Desktop + Web maps |
 | **CME Arrival Countdown (needs upstream arrival ts)** | P3 | Superseded by SIM watch | SunView |
 | **Settings Location Delete/Reorder** | P2 | Completed | Desktop SettingsView |
-| **SSE Live Stream Endpoint** | P2 | In Progress | Web API (`/api/stream/live`) |
-| **Full Seed Coverage (33 Sources)** | P2 | Partial (12/33) | Core / Offline Fixtures |
-| **Events Table Sorting & Map Cross-Linking** | P2 | Pending | Desktop EventsView |
-| **AppImage Packaging Test** | P3 | Pending | Packaging |
+| **SSE Live Stream Endpoint** | P2 | Completed | Web API + Live badge (`/api/stream/live`) |
+| **Full Seed Coverage (33 Sources)** | P2 | Partial (28/33) | Core / Offline Fixtures |
+| **Events Table Sorting + Map Cross-Linking** | P2 | Completed | Desktop EventsView + MapView + Web |
+| **AppImage Packaging Test** | P3 | Completed | Portable spec + data bundled, frozen GUI boots |

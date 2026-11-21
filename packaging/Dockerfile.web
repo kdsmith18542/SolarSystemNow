@@ -1,0 +1,21 @@
+# ssnow-web self-hosting image (FastAPI + built React bundle in ../static/).
+# Build the web bundle first: (cd ssnow_web && npm run build)
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    SSNOW_DATA_DIR=/data/ssnow \
+    SSNOW_CONFIG_DIR=/data/ssnow-config \
+    SSNOW_CACHE_DIR=/data/ssnow-cache
+
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY ssnow_core ./ssnow_core
+COPY ssnow_web ./ssnow_web
+COPY static ./static
+RUN pip install --no-cache-dir ".[web]" && \
+    python -c "import ssnow_web.api, ssnow_core.seed; print('import ok')"
+
+EXPOSE 8123
+VOLUME ["/data"]
+CMD ["python", "-m", "ssnow_web.server", "--port", "8123", "--host", "0.0.0.0"]

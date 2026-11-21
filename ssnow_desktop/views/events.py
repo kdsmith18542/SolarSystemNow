@@ -117,8 +117,20 @@ class DetailDialog(QDialog):
         close = QPushButton("Close")
         close.clicked.connect(self.accept)
         buttons.addStretch(1)
+        if event.latitude is not None and event.longitude is not None:
+            show = QPushButton("Show on Map")
+            show.setToolTip("Center the Map tab on this event")
+            show.clicked.connect(lambda: self._show_on_map(event))
+            buttons.addWidget(show)
         buttons.addWidget(close)
         layout.addLayout(buttons)
+
+    def _show_on_map(self, event) -> None:
+        mw = self.window()
+        show = getattr(mw, "show_on_map", None)
+        if callable(show):
+            show(event.latitude, event.longitude)
+        self.accept()
 
 
 class EventsView(BaseView):
@@ -153,6 +165,8 @@ class EventsView(BaseView):
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["Time (UTC)", "Source", "Category", "Magnitude", "Title", "Place / detail"])
         self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setSectionsClickable(True)
+        self.table.setSortingEnabled(True)
         self.table.setSelectionBehavior(self.table.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(self.table.EditTrigger.NoEditTriggers)
         self.table.doubleClicked.connect(self._on_double_clicked)
@@ -172,6 +186,7 @@ class EventsView(BaseView):
             min_magnitude=min_magnitude,
             limit=500,
         )
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(len(events))
         for row, event in enumerate(events):
             self.table.setItem(row, 0, QTableWidgetItem(fmt_ts(event.occurred_at)))
@@ -193,6 +208,7 @@ class EventsView(BaseView):
             )
             self.table.setItem(row, 5, QTableWidgetItem(detail))
             self.table.item(row, 0).setData(Qt.ItemDataRole.UserRole, event)
+        self.table.setSortingEnabled(True)
 
     def _on_double_clicked(self, index) -> None:
         item = self.table.item(index.row(), 0)

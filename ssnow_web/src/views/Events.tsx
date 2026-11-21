@@ -16,6 +16,13 @@ export default function Events() {
   const [days, setDays] = useState(7);
   const [mag, setMag] = useState(0);
   const [selected, setSelected] = useState<Event | null>(null);
+  const [sort, setSort] = useState<{ key: 'time' | 'mag'; dir: 1 | -1 }>({ key: 'time', dir: -1 });
+
+  const sorted = [...events].sort((a, b) => {
+    if (sort.key === 'mag') return ((a.magnitude ?? -1e9) - (b.magnitude ?? -1e9)) * sort.dir;
+    return ((a.occurred_at ?? '') < (b.occurred_at ?? '') ? -1 : 1) * sort.dir;
+  });
+  const arrow = (key: 'time' | 'mag') => (sort.key === key ? (sort.dir === 1 ? ' ▲' : ' ▼') : '');
 
   const load = async () => {
     setLoading(true);
@@ -49,11 +56,11 @@ export default function Events() {
           <table className="w-full text-left text-sm border-collapse">
             <thead>
               <tr className="text-slate-500 border-b border-slate-800 bg-slate-900">
-                <th className="px-4 py-3">Time (UTC)</th><th className="px-4 py-3">Source</th><th className="px-4 py-3">Category</th><th className="px-4 py-3 text-right">Mag</th><th className="px-4 py-3">Title</th><th className="px-4 py-3">Place</th>
+                <th className="px-4 py-3 cursor-pointer hover:text-slate-300 select-none" onClick={() => setSort((s) => ({ key: 'time', dir: s.key === 'time' && s.dir === -1 ? 1 : -1 }))}>Time (UTC){arrow('time')}</th><th className="px-4 py-3">Source</th><th className="px-4 py-3">Category</th><th className="px-4 py-3 text-right cursor-pointer hover:text-slate-300 select-none" onClick={() => setSort((s) => ({ key: 'mag', dir: s.key === 'mag' && s.dir === -1 ? 1 : -1 }))}>Mag{arrow('mag')}</th><th className="px-4 py-3">Title</th><th className="px-4 py-3">Place</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800">
-              {events.map((e) => (
+              {sorted.map((e) => (
                 <tr
                   key={e.id}
                   className="hover:bg-slate-800/50 cursor-pointer group"

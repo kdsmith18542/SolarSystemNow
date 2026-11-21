@@ -1,0 +1,11 @@
+[
+  {
+    "gstID": "2026-05-11T16:00:00-GST-001",
+    "startTime": "2026-05-11T16:00Z",
+    "allKpIndex": [
+      {"observedTime": "2026-05-11T18:00Z", "kpIndex": 7.33, "source": "SWPC"},
+      {"observedTime": "2026-05-11T21:00Z", "kpIndex": 8.0, "source": "SWPC"}
+    ],
+    "link": "https://ccmc.gsfc.nasa.gov/DONKI/view/GST/12345/-1"
+  }
+]

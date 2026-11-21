@@ -23,7 +23,7 @@ from ssnow_core.sources.registry import SPECS
 from ssnow_core.sources.sentry import SentryAdapter
 from ssnow_core.sources.solarwind import MagAdapter, SolarWindAdapter
 from ssnow_core.sources.spc import SPCOutlookAdapter
-from ssnow_core.sources.swpc import F107Adapter, KpForecastAdapter, XrayAdapter
+from ssnow_core.sources.swpc import AlertsAdapter, F107Adapter, KpForecastAdapter, XrayAdapter
 from ssnow_core.sources.tides import TidesAdapter
 from conftest import load_fixture
 
@@ -328,6 +328,16 @@ def test_sun_imagery_channels_ingest(tmp_store):
         report = adapter.ingest(tmp_store, client, _now())
         assert report.ok
         assert tmp_store.latest_asset(spec_id) is not None
+
+
+def test_swpc_alerts_ingest(tmp_store):
+    adapter = AlertsAdapter(SPECS["swpc_alerts"])
+    report = adapter.ingest(tmp_store, _client(load_fixture("swpc_alerts.json")), _now())
+    assert report.ok
+    assert len(report.events) == 2
+    assert report.events[0].category == "space_weather_alert"
+    assert "ALTTP2" in report.events[0].title
+    assert "Type II" in (report.events[0].description or "")
 
 
 def test_event_ids_stable_and_unique():

@@ -1,0 +1,33 @@
+# Turnkey self-hosting for ssnow-web (home servers, NAS, Raspberry Pi).
+# Usage:
+#   (cd ssnow_web && npm run build)   # build the React bundle into ../static/
+#   docker compose -f packaging/docker-compose.yml up -d --build
+#   # open http://<host>:8123
+# Data persists in the ssnow-data volume across restarts/upgrades.
+name: ssnow
+
+services:
+  web:
+    build:
+      context: ..
+      dockerfile: packaging/Dockerfile.web
+    image: ssnow-web:latest
+    container_name: ssnow-web
+    restart: unless-stopped
+    ports:
+      - "8123:8123"
+    volumes:
+      - ssnow-data:/data
+    environment:
+      SSNOW_DATA_DIR: /data/ssnow
+      SSNOW_CONFIG_DIR: /data/ssnow-config
+      SSNOW_CACHE_DIR: /data/ssnow-cache
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8123/api/health')"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  ssnow-data:

@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from PySide6.QtCore import QUrl
-from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QVBoxLayout
+from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
 try:
     from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -80,8 +80,8 @@ function initMap() {
   const map = new maplibregl.Map({
     container: 'map',
     style: '%%STYLE%%',
-    center: [20, 10],
-    zoom: 1.1,
+    center: [%%LON%%, %%LAT%%],
+    zoom: %%ZOOM%%,
   });
   map.on('load', () => {
     // NEXRAD radar overlay (IEM WMS, US coverage, live tiles — nothing stored).
@@ -150,8 +150,14 @@ class MapView(BaseView):
         self._radar_box.setToolTip("Live NEXRAD mosaic overlay (US coverage, nothing stored)")
         self._radar_box.stateChanged.connect(lambda _s: self.refresh())
         toolbar.addWidget(self._radar_box)
+        self._reset_btn = QPushButton("Reset view")
+        self._reset_btn.setToolTip("Back to the full-world view")
+        self._reset_btn.clicked.connect(self.reset_view)
+        toolbar.addWidget(self._reset_btn)
         toolbar.addStretch(1)
         layout.addLayout(toolbar)
+        self._center: tuple[float, float] | None = None  # (lon, lat) focus from Show-on-Map
+        self._zoom: float | None = None
         if not HAVE_WEBENGINE:
             self.label = QLabel("QtWebEngine is not available in this build.")
             layout.addWidget(self.label)
@@ -220,11 +226,27 @@ class MapView(BaseView):
                     }
                 )
         geojson = json.dumps({"type": "FeatureCollection", "features": features})
+        lon, lat = self._center if self._center is not None else (20.0, 10.0)
+        zoom = self._zoom if self._zoom is not None else 1.1
         html = (
             HTML_TEMPLATE.replace("%%CSS%%", MAPLIBRE_CSS)
             .replace("%%JS%%", MAPLIBRE_JS)
             .replace("%%STYLE%%", MAP_STYLE)
             .replace("%%RADAR%%", "true" if (self._radar_box is not None and self._radar_box.isChecked()) else "false")
+            .replace("%%LON%%", f"{lon:.4f}")
+            .replace("%%LAT%%", f"{lat:.4f}")
+            .replace("%%ZOOM%%", f"{zoom:.1f}")
             .replace("%%GEOJSON%%", geojson)
         )
         self.view.setHtml(html, QUrl("about:blank"))
+
+    def focus(self, latitude: float, longitude: float) -> None:
+        """Center the map on an event (Show on Map); sticky until Reset."""
+        self._center = (longitude, latitude)
+        self._zoom = 5.0
+        self.refresh()
+
+    def reset_view(self) -> None:
+        self._center = None
+        self._zoom = None
+        self.refresh()

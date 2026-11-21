@@ -1,12 +1,19 @@
 # -*- mode: python -*-
+# Build with: packaging/build_appimage.sh (run from the repo root).
+# NOTE: keep paths relative to this file so the spec works on any machine.
 
-import sys
+import os
+
+# SPECPATH is provided by PyInstaller: the directory containing this spec.
+ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 
 a = Analysis(
-    ["/media/keith/Data2/ss-now/scripts/ssnow_gui.py"],
-    pathex=["/media/keith/Data2/ss-now"],
+    [os.path.join(ROOT, "scripts", "ssnow_gui.py")],
+    pathex=[ROOT],
     binaries=[],
-    datas=[],
+    datas=[
+        (os.path.join(ROOT, "ssnow_core", "data"), "ssnow_core/data"),
+    ],
     hiddenimports=["ssnow_core", "ssnow_core.sources", "ssnow_desktop", "ssnow_desktop.views"],
     hookspath=[],
     runtime_hooks=[],

@@ -113,9 +113,28 @@ export interface SunSummary {
 
 const API = "/api";
 
+// Optional write token for servers started with SSNOW_API_TOKEN.
+// Stored in localStorage from the Settings tab; GETs never need it.
+export function getWriteToken(): string {
+  return localStorage.getItem("ssnow_write_token") || "";
+}
+
+export function setWriteToken(token: string): void {
+  if (token) localStorage.setItem("ssnow_write_token", token);
+  else localStorage.removeItem("ssnow_write_token");
+}
+
+function writeHeaders(): Record<string, string> {
+  const token = getWriteToken();
+  return token ? { "X-SSNOW-Token": token } : {};
+}
+
 async function json<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API}${path}`, init);
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    if (res.status === 403) throw new Error("403 — write token required (set it in Settings)");
+    throw new Error(`${res.status} ${res.statusText}`);
+  }
   return res.json();
 }
 
@@ -137,14 +156,14 @@ export const api = {
   event: (id: string) => json<Event>(`/events/${encodeURIComponent(id)}`),
   kp: (limit?: number) => json<{ series: string; unit: string; count: number; points: KpPoint[] }>(`/sun/kp?limit=${limit ?? 120}`),
   moon: () => json<MoonState>("/moon/state"),
-  ingest: () => json<{ timestamp: string; sources: any[] }>("/ingest", { method: "POST" }),
+  ingest: () => json<{ timestamp: string; sources: any[] }>("/ingest", { method: "POST", headers: writeHeaders() }),
   settings: {
     get: () => json<Settings>("/settings"),
-    set: (body: Partial<Settings> & { nasa_api_key?: string }) => json<{ ok: boolean }>("/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+    set: (body: Partial<Settings> & { nasa_api_key?: string }) => json<{ ok: boolean }>("/settings", { method: "POST", headers: { "Content-Type": "application/json", ...writeHeaders() }, body: JSON.stringify(body) }),
   },
   simScenarios: () => json<{ scenarios: SimScenario[] }>("/sim/scenarios"),
   simRun: (body: { id: string; params: Record<string, any> }) =>
-    json<any>("/sim/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+    json<any>("/sim/run", { method: "POST", headers: { "Content-Type": "application/json", ...writeHeaders() }, body: JSON.stringify(body) }),
   sunSummary: () => json<SunSummary>("/sun/summary"),
   obs: (source: string, series: string, limit?: number) =>
     json<{ source: string; series: string; unit: string | null; count: number; points: Array<{ ts: string; value: number; extra: any }> }>(`/obs?source=${encodeURIComponent(source)}&series=${encodeURIComponent(series)}&limit=${limit ?? 120}`),

@@ -112,6 +112,21 @@ class SettingsView(BaseView):
         self.retention.setSuffix(" days")
         form.addRow("Snapshot retention:", self.retention)
 
+        # Desktop tray alerts (applies immediately; no restart needed).
+        self.alerts_master = QCheckBox("Enable desktop tray alerts")
+        self.alerts_master.setChecked(bool(self._qsettings.value("alerts_enabled", True, type=bool)))
+        self.alerts_spacewx = QCheckBox("Space weather (Kp ≥ 5, Bz ≤ −5 nT, protons S1+, Dst ≤ −50)")
+        self.alerts_spacewx.setChecked(bool(self._qsettings.value("alerts_spacewx", True, type=bool)))
+        self.alerts_quakes = QCheckBox("Strong earthquakes (M ≥ 6.0)")
+        self.alerts_quakes.setChecked(bool(self._qsettings.value("alerts_quakes", True, type=bool)))
+        self.alerts_neo = QCheckBox("Close approaches (PHA or < 1 lunar distance)")
+        self.alerts_neo.setChecked(bool(self._qsettings.value("alerts_neo", True, type=bool)))
+        alerts_row = QVBoxLayout()
+        alerts_row.setSpacing(4)
+        for box in (self.alerts_master, self.alerts_spacewx, self.alerts_quakes, self.alerts_neo):
+            alerts_row.addWidget(box)
+        form.addRow("Alerts:", alerts_row)
+
         self.db_path_lbl = QLabel()
         self.db_path_lbl.setObjectName("faint")
         form.addRow("Database path:", self.db_path_lbl)
@@ -207,6 +222,10 @@ class SettingsView(BaseView):
         self._qsettings.setValue("remote_mode", bool(self.remote_check.isChecked()))
         self._qsettings.setValue("remote_base_url", self.remote_url.text().strip() or "http://localhost:8123")
         self._qsettings.setValue("remote_token", self.remote_token.text().strip())
+        self._qsettings.setValue("alerts_enabled", bool(self.alerts_master.isChecked()))
+        self._qsettings.setValue("alerts_spacewx", bool(self.alerts_spacewx.isChecked()))
+        self._qsettings.setValue("alerts_quakes", bool(self.alerts_quakes.isChecked()))
+        self._qsettings.setValue("alerts_neo", bool(self.alerts_neo.isChecked()))
         key_text = self.nasa_key.text().strip()
         # In remote mode the server never reveals the key: a blank field
         # means "keep", so only POST when the user typed something.

@@ -39,3 +39,21 @@ test('OBS stream overlay renders without app chrome', async ({ page }) => {
 
   expect(errors, `uncaught page errors: ${errors.join('; ')}`).toEqual([]);
 });
+
+test('settings manages locations and sources show health', async ({ page }) => {
+  await page.goto('/?nosse=1');
+
+  await page.getByRole('button', { name: 'Settings' }).click();
+  await page.getByPlaceholder('Name', { exact: true }).fill('Testville');
+  await page.getByPlaceholder('Lat').fill('10');
+  await page.getByPlaceholder('Lon').fill('20');
+  await page.getByRole('button', { name: 'Add', exact: true }).first().click();
+  await expect(page.getByText('Testville')).toBeVisible();
+  await page.getByRole('button', { name: 'Remove' }).first().click();
+  await expect(page.getByText('Testville')).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Sources' }).click();
+  await expect(page.getByText('Sources enabled')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Ingest all due' })).toBeVisible();
+  await expect(page.getByText(/sources healthy/)).toBeVisible();
+});

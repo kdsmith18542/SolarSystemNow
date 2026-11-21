@@ -254,3 +254,25 @@ def test_prune_assets(tmp_store):
     pruned = tmp_store.prune_assets_for_source("sun", keep_latest=5)
     assert pruned == 5
     assert tmp_store.stats()["assets"] == 5
+
+
+def test_concurrent_store_access_is_thread_safe(tmp_store):
+    """FastAPI runs sync endpoints in a thread pool: concurrent settings and
+    query calls on the shared SQLite connection must not raise
+    InterfaceError ('bad parameter or other API misuse')."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    tmp_store.upsert_events([_event("a"), _event("b", magnitude=6.1)])
+
+    def worker(n: int) -> None:
+        for i in range(40):
+            tmp_store.set_setting("locations", [{"name": f"loc-{n}-{i}", "lat": 1.0, "lon": 2.0, "key": "1,2"}])
+            tmp_store.get_setting("locations")
+            tmp_store.query_events(limit=10)
+            tmp_store.event_count()
+            tmp_store.stats()
+            tmp_store.due_sources(_NOW)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(worker, range(8)))
+    assert tmp_store.event_count() >= 2

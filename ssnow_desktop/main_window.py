@@ -484,12 +484,27 @@ class MainWindow(QMainWindow):
         if self._streamer_mode:
             self._update_stream_banner()
 
+    def _alerts_enabled(self, key: str) -> bool:
+        """Desktop alert preferences (QSettings, default on)."""
+        try:
+            settings = QSettings("ssnow", "ssnow")
+            if not bool(settings.value("alerts_enabled", True, type=bool)):
+                return False
+            return bool(settings.value(key, True, type=bool))
+        except Exception:
+            return True
+
     def _check_and_notify_alerts(self) -> None:
+        if not self._alerts_enabled("alerts_spacewx") and not self._alerts_enabled("alerts_quakes") and not self._alerts_enabled("alerts_neo"):
+            return
+        alerts_spacewx = self._alerts_enabled("alerts_spacewx")
+        alerts_quakes = self._alerts_enabled("alerts_quakes")
+        alerts_neo = self._alerts_enabled("alerts_neo")
         try:
             from datetime import datetime, timezone
             now = datetime.now(timezone.utc)
             # 1. Check for elevated Kp (geomagnetic storm >= 5.0)
-            kp_obs = self.store.latest_observations("swpc", "swpc:kp")
+            kp_obs = self.store.latest_observations("swpc", "swpc:kp") if alerts_spacewx else []
             if kp_obs and kp_obs[0].value >= 5.0:
                 notif_id = f"kp-{kp_obs[0].ts.strftime('%Y%m%d%H%M')}"
                 val = kp_obs[0].value
@@ -503,7 +518,7 @@ class MainWindow(QMainWindow):
                 )
 
             # 2. Check for significant earthquakes (M >= 6.0)
-            quakes = self.store.query_events(categories=["earthquake"], min_magnitude=6.0, limit=5)
+            quakes = self.store.query_events(categories=["earthquake"], min_magnitude=6.0, limit=5) if alerts_quakes else []
             for q in quakes:
                 notif_id = f"quake-{q.id}"
                 self.store.add_notification(
@@ -517,7 +532,7 @@ class MainWindow(QMainWindow):
 
             # 3. Close-approach alerts: PHA or inside Moon orbit (<1 LD)
             try:
-                neos = self.store.query_events(categories=["neo"], limit=100)
+                neos = self.store.query_events(categories=["neo"], limit=100) if alerts_neo else []
                 for n in neos:
                     ex = n.extra_json or {}
                     ld = None
@@ -545,7 +560,7 @@ class MainWindow(QMainWindow):
 
             # 3b. IMF Bz southward (auroral/storm coupling): Bz <= -5 nT.
             try:
-                bz_obs = self.store.latest_observations("swpc", "swpc:imf_bz_gsm")
+                bz_obs = self.store.latest_observations("swpc", "swpc:imf_bz_gsm") if alerts_spacewx else []
                 if bz_obs and bz_obs[0].value <= -5.0:
                     notif_id = f"bz-{bz_obs[0].ts.strftime('%Y%m%d%H%M')}"
                     self.store.add_notification(
@@ -561,7 +576,7 @@ class MainWindow(QMainWindow):
 
             # 3c. Solar radiation storm (GOES protons >= 10 pfu = S1).
             try:
-                p_obs = self.store.latest_observations("swpc", "swpc:proton_flux_gte10MeV")
+                p_obs = self.store.latest_observations("swpc", "swpc:proton_flux_gte10MeV") if alerts_spacewx else []
                 if p_obs and p_obs[0].value >= 10.0:
                     v = p_obs[0].value
                     notif_id = f"proton-{p_obs[0].ts.strftime('%Y%m%d%H%M')}"
@@ -578,7 +593,7 @@ class MainWindow(QMainWindow):
 
             # 3d. Dst storm (moderate <= -50 nT).
             try:
-                d_obs = self.store.latest_observations("swpc", "swpc:dst")
+                d_obs = self.store.latest_observations("swpc", "swpc:dst") if alerts_spacewx else []
                 if d_obs and d_obs[0].value <= -50.0:
                     v = d_obs[0].value
                     notif_id = f"dst-{d_obs[0].ts.strftime('%Y%m%d%H%M')}"

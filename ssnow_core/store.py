@@ -23,6 +23,20 @@ from .models import Event, EVENT_LIMIT, Observation, SnapshotRecord, SourceState
 
 logger = get_logger("store")
 
+
+def _locked(method):
+    """Serialize SQLite access from worker threads (FastAPI runs sync
+    endpoints in a thread pool). RLock is re-entrant, so methods that use
+    `with self.transaction()` remain safe to decorate."""
+    import functools
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
 PRAGMA_STATEMENTS = (
     "PRAGMA journal_mode=WAL",
     "PRAGMA synchronous=NORMAL",
@@ -310,6 +324,7 @@ class Store:
 
     # ---- settings -----------------------------------------------------
 
+    @_locked
     def get_setting(self, key: str, default: Any = None) -> Any:
         row = self._conn.execute(
             "SELECT value_json FROM settings WHERE key = ?", (key,)
@@ -321,6 +336,7 @@ class Store:
         except json.JSONDecodeError:
             return default
 
+    @_locked
     def set_setting(self, key: str, value: Any) -> None:
         self._conn.execute(
             "INSERT OR REPLACE INTO settings(key, value_json) VALUES (?, ?)",
@@ -360,6 +376,7 @@ class Store:
             ).fetchone()
         return self._row_to_event(row) if row else None
 
+    @_locked
     def query_events(
         self,
         *,
@@ -401,6 +418,7 @@ class Store:
         rows = self._conn.execute(sql, params).fetchall()
         return [self._row_to_event(row) for row in rows]
 
+    @_locked
     def find_nearby_event(
         self,
         source: str,
@@ -437,6 +455,7 @@ class Store:
             return None
         return self._row_to_event(rows[0])
 
+    @_locked
     def event_count(self) -> int:
         return int(self._conn.execute("SELECT COUNT(*) FROM events").fetchone()[0])
 
@@ -486,6 +505,7 @@ class Store:
                 count += 1
         return count
 
+    @_locked
     def latest_observations(self, source: str, prefix: str, since: datetime | None = None) -> list[Observation]:
         conditions = ["source = ?", "series LIKE ?"]
         params: list[Any] = [source, f"{prefix}%"]
@@ -510,6 +530,7 @@ class Store:
             grouped.setdefault(obs.series, []).append(obs)
         return [obs_list[0] for obs_list in grouped.values()]
 
+    @_locked
     def get_series(self, source: str, series: str, start: datetime | None = None, end: datetime | None = None, limit: int = 10000) -> list[Observation]:
         conditions = ["source = ?", "series = ?"]
         params: list[Any] = [source, series]
@@ -625,6 +646,7 @@ class Store:
                 },
             )
 
+    @_locked
     def latest_asset(self, source: str) -> str | None:
         row = self._conn.execute(
             "SELECT path FROM assets WHERE source = ? ORDER BY fetched_at DESC LIMIT 1",
@@ -632,6 +654,7 @@ class Store:
         ).fetchone()
         return row[0] if row is not None else None
 
+    @_locked
     def prune_observations_before(self, source: str, series_like: str, cutoff: datetime) -> int:
         cursor = self._conn.execute(
             "DELETE FROM observations WHERE source = ? AND series LIKE ? AND ts < ?",
@@ -640,6 +663,7 @@ class Store:
         self._conn.commit()
         return cursor.rowcount if cursor.rowcount is not None else 0
 
+    @_locked
     def prune_snapshots_for_source(self, source: str, retention_days: int) -> int:
         from pathlib import Path as _Path
 
@@ -660,6 +684,7 @@ class Store:
         self._conn.commit()
         return len(rows)
 
+    @_locked
     def prune_snapshots(self, retention_days: int) -> int:
         cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
         rows = self._conn.execute(
@@ -799,6 +824,7 @@ class Store:
                 },
             )
 
+    @_locked
     def all_source_states(self) -> list[SourceState]:
         rows = self._conn.execute(
             "SELECT * FROM source_state ORDER BY source_id"
@@ -816,6 +842,7 @@ class Store:
             for row in rows
         ]
 
+    @_locked
     def begin_attempt(self, source_id: str, now: datetime) -> None:
         row = self._conn.execute(
             "SELECT * FROM source_state WHERE source_id = ?", (source_id,)
@@ -832,6 +859,7 @@ class Store:
             )
         self._conn.commit()
 
+    @_locked
     def record_success(self, source_id: str, now: datetime, records: int = 0, cadence_seconds: int = 3600) -> None:
         row = self._conn.execute(
             "SELECT records_ingested FROM source_state WHERE source_id = ?",
@@ -850,6 +878,7 @@ class Store:
         self.upsert_source_state(state)
         self._maybe_auto_prune()
 
+    @_locked
     def record_failure(self, source_id: str, now: datetime, error: str, cadence_seconds: int = 3600) -> None:
         row = self._conn.execute(
             "SELECT consecutive_failures, records_ingested, last_success FROM source_state WHERE source_id = ?",
@@ -874,6 +903,7 @@ class Store:
         )
         self.upsert_source_state(state)
 
+    @_locked
     def due_sources(self, now: datetime) -> list[str]:
         tracked = {
             row[0]
@@ -893,6 +923,7 @@ class Store:
 
     # ---- stats / backup ----------------------------------------------
 
+    @_locked
     def stats(self) -> dict[str, Any]:
         event_count = int(self._conn.execute("SELECT COUNT(*) FROM events").fetchone()[0])
         obs_count = int(self._conn.execute("SELECT COUNT(*) FROM observations").fetchone()[0])

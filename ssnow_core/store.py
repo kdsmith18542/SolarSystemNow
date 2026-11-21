@@ -18,7 +18,10 @@ from .config import (
     default_db_path,
     default_snapshot_dir,
 )
+from .logging_config import get_logger
 from .models import Event, EVENT_LIMIT, Observation, SnapshotRecord, SourceState
+
+logger = get_logger("store")
 
 PRAGMA_STATEMENTS = (
     "PRAGMA journal_mode=WAL",
@@ -285,6 +288,7 @@ class Store:
                         definition = definition.rstrip() + " DEFAULT 0"
                 try:
                     self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+                    logger.warning("schema self-heal: added column %s.%s (%s)", table, name, self.db_path)
                 except sqlite3.OperationalError as exc:
                     # Duplicate column from a concurrent opener is benign.
                     if "duplicate column" not in str(exc).lower():

@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 
 from ssnow_core.models import Event
+from ssnow_core.logging_config import get_logger
 from ssnow_core.scheduler import run_due, utcnow as core_utcnow
 from ssnow_core.seed import seed_if_empty
 from ssnow_core.sim import get_scenario, list_scenarios
@@ -20,6 +21,8 @@ from ssnow_core.store import Store
 from ssnow_core.sources.registry import all_specs, spec_for
 
 app = FastAPI(title="Solar System Now API", version="0.1.0")
+
+logger = get_logger("ssnow_web.api")
 
 app.add_middleware(
     CORSMiddleware,
@@ -47,6 +50,9 @@ def get_store() -> Store:
     global _store
     if _store is None:
         _store = Store()
+        # Log the resolved path: SSNOW_DATA_DIR typos create a second, seeded
+        # database that looks like data loss (two dirs one character apart).
+        logger.info("ssnow-web store opened: %s", _store.db_path)
     return _store
 
 

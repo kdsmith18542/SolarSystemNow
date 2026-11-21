@@ -166,6 +166,7 @@ class MainWindow(QMainWindow):
                 seed_if_empty(self.store)
         else:
             self.store = Store()
+            logger.info("Desktop store opened: %s", self.store.db_path)
             from ssnow_core.seed import seed_if_empty
 
             seed_if_empty(self.store)

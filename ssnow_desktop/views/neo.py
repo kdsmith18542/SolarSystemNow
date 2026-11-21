@@ -226,7 +226,7 @@ class NeoView(BaseView):
         layout.setSpacing(8)
 
         self.header = QLabel("—")
-        self.header.setStyleSheet("font-size: 14px; font-weight: 700;")
+        self.header.setObjectName("h2")
         self.header.setWordWrap(True)
         layout.addWidget(self.header)
 
@@ -244,7 +244,7 @@ class NeoView(BaseView):
         layout.addWidget(self.table)
 
         self.attr = QLabel("NASA JPL CNEOS NeoWs + SBDB CAD · distances in Lunar Distances (1 LD = 384,400 km)")
-        self.attr.setStyleSheet("color: #666; font-size: 11px;")
+        self.attr.setObjectName("source")
         self.attr.setWordWrap(True)
         layout.addWidget(self.attr)
 

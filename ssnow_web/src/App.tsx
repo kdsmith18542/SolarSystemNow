@@ -7,6 +7,7 @@ import SimView from './views/SimView';
 import SunView from './views/SunView';
 import MoonView from './views/MoonView';
 import NeoView from './views/NeoView';
+import StreamOverlay from './views/StreamOverlay';
 import Sources from './views/Sources';
 import Settings from './views/Settings';
 
@@ -35,6 +36,14 @@ const VIEWS: Record<string, React.ElementType> = {
 };
 
 export default function App() {
+  // OBS Browser Source target: chrome-free broadcast overlay.
+  if (window.location.pathname.replace(/\/+$/, '') === '/stream') {
+    return <StreamOverlay />;
+  }
+  return <DashboardShell />;
+}
+
+function DashboardShell() {
   const [tab, setTab] = useState('dashboard');
   const [refreshKey, setRefreshKey] = useState(0);
   const [live, setLive] = useState(false);

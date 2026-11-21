@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from .base_view import BaseView
+from .. import theme
 
 CATEGORIES = [
     "All",
@@ -38,6 +40,23 @@ CATEGORIES = [
     "weather_alert",
     "other",
 ]
+
+CATEGORY_COLORS = {
+    "earthquake": theme.DANGER,
+    "volcano": theme.ORANGE,
+    "wildfire": "#ef4444",
+    "storm": "#60a5fa",
+    "flood": "#22d3ee",
+    "space_weather_alert": "#e879f9",
+    "geomagnetic_storm": theme.VIOLET,
+    "cme": theme.PINK,
+    "solar_flare": theme.WARN,
+    "neo": theme.LIME,
+    "fireball": theme.ORANGE,
+    "severe_outlook": "#facc15",
+    "weather_alert": theme.ACCENT,
+    "other": theme.TEXT_DIM,
+}
 
 
 def fmt_ts(value) -> str:
@@ -191,7 +210,10 @@ class EventsView(BaseView):
         for row, event in enumerate(events):
             self.table.setItem(row, 0, QTableWidgetItem(fmt_ts(event.occurred_at)))
             self.table.setItem(row, 1, QTableWidgetItem(event.source))
-            self.table.setItem(row, 2, QTableWidgetItem(event.category))
+            cat_item = QTableWidgetItem(event.category)
+            cat_color = CATEGORY_COLORS.get(event.category, theme.TEXT_DIM)
+            cat_item.setForeground(QColor(cat_color))
+            self.table.setItem(row, 2, cat_item)
             mag_text = (
                 f"{event.magnitude:.1f} {event.magnitude_unit or ''}".strip()
                 if event.magnitude is not None
@@ -199,6 +221,11 @@ class EventsView(BaseView):
             )
             mag_item = QTableWidgetItem(mag_text)
             mag_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            seismic_unit = (event.magnitude_unit or "M") in ("M", "ML", "Mb", "MbLg", "Ms", "Mw", "md", "MLv", "")
+            if seismic_unit and event.magnitude is not None and event.magnitude >= 6:
+                mag_item.setForeground(QColor(theme.DANGER))
+            elif seismic_unit and event.magnitude is not None and event.magnitude >= 4:
+                mag_item.setForeground(QColor(theme.WARN))
             self.table.setItem(row, 3, mag_item)
             self.table.setItem(row, 4, QTableWidgetItem(event.title))
             detail = (

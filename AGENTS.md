@@ -71,7 +71,7 @@ The project is structured into three distinct layers with strict boundaries:
   - `views/`: Desktop view tabs (`now.py`, `events.py`, `map.py`, `sun.py`, `moon.py`, `neo.py`, `sources.py`, `settings.py`).
   - `views/widgets/`: Reusable Qt widgets (`sparkline.py`, `PhaseDisk`).
 - `ssnow_web/`
-  - `api.py`: FastAPI endpoints (incl. `/api/neos`, `/api/spc/outlooks`, `/api/fireballs`; `/api/sun/summary` carries bz/bt/dst/proton/ssn; `/api/sun/images` (6 channels) + `/api/sim/cme-watch` (auto-fed ballistic SIM).
+  - `api.py`: FastAPI endpoints (incl. `/api/neos`, `/api/spc/outlooks`, `/api/fireballs`; `/api/sun/summary` carries bz/bt/dst/proton(10/50/100)/ssn/wind/aurora-max+oval/declination(primary loc); `/api/sun/images` (6 channels) + `/api/sim/cme-watch` (auto-fed ballistic SIM).
   - `server.py`: Uvicorn launcher (`ssnow-web`).
   - `src/`: React TypeScript frontend (Dashboard, Events, MapView, SunView, MoonView, NeoView, SimView).
   - `vite.config.ts`: Builds into `/media/keith/Data2/ss-now/static/`.

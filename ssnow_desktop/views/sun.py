@@ -35,9 +35,9 @@ class SunView(BaseView):
 
         top = QHBoxLayout()
         self.kp_value = QLabel("—")
-        self.kp_value.setStyleSheet("font-size: 32px; font-weight: 700; color: #0d6efd;")
+        self.kp_value.setObjectName("cardValue")
         self.kp_meta = QLabel("No Kp data yet")
-        self.kp_meta.setStyleSheet("color: #666;")
+        self.kp_meta.setObjectName("muted")
         top.addWidget(self.kp_value)
         top.addWidget(self.kp_meta)
         top.addStretch(1)
@@ -49,7 +49,7 @@ class SunView(BaseView):
         img_row = QHBoxLayout()
         self.image_lbl = QLabel("No solar image yet")
         self.image_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_lbl.setStyleSheet("border: 1px solid #ddd; background: #fafafa; color: #888;")
+        self.image_lbl.setObjectName("card")
         self.image_lbl.setMinimumHeight(260)
         img_row.addWidget(self.image_lbl)
         img_row.addStretch(1)
@@ -71,9 +71,11 @@ class SunView(BaseView):
         self.imf_lbl = QLabel("—")
         form.addRow("IMF Bz / Bt (GSM):", self.imf_lbl)
         self.proton_lbl = QLabel("—")
-        form.addRow("GOES protons ≥10 MeV:", self.proton_lbl)
+        form.addRow("GOES protons (≥10/50/100 MeV):", self.proton_lbl)
         self.dst_lbl = QLabel("—")
         form.addRow("Dst index:", self.dst_lbl)
+        self.decl_lbl = QLabel("—")
+        form.addRow("Magnetic declination (loc):", self.decl_lbl)
         self.ssn_lbl = QLabel("—")
         form.addRow("Sunspot number:", self.ssn_lbl)
         self.cme_lbl = QLabel("—")
@@ -129,7 +131,11 @@ class SunView(BaseView):
         aurora = self.store.get_series("aurora", "aurora:intensity_max", limit=1)
         if aurora:
             o = aurora[-1]
-            self.aurora_lbl.setText(f"max {o.value:.0f} · {fmt_ts(o.ts)}")
+            txt = f"max {o.value:.0f} · {fmt_ts(o.ts)}"
+            oval = self.store.get_series("aurora", "aurora:oval_equatorward_deg", limit=1)
+            if oval:
+                txt += f" · oval edge {oval[-1].value:.1f}°"
+            self.aurora_lbl.setText(txt)
         else:
             self.aurora_lbl.setText("—")
         fc = self.store.get_series("swpc", "swpc:kp_forecast", limit=24)
@@ -166,7 +172,14 @@ class SunView(BaseView):
             o = proton[-1]
             v = o.value
             scale = "S4" if v >= 10000 else ("S3" if v >= 1000 else ("S2" if v >= 100 else ("S1" if v >= 10 else "below S1")))
-            self.proton_lbl.setText(f"{v:.1f} pfu · {scale} · {fmt_ts(o.ts)}")
+            p50 = self.store.get_series("swpc", "swpc:proton_flux_gte50MeV", limit=1)
+            p100 = self.store.get_series("swpc", "swpc:proton_flux_gte100MeV", limit=1)
+            extra = ""
+            if p50:
+                extra += f" · ≥50 {p50[-1].value:.2f}"
+            if p100:
+                extra += f" · ≥100 {p100[-1].value:.2f}"
+            self.proton_lbl.setText(f"{v:.1f} pfu · {scale}{extra} · {fmt_ts(o.ts)}")
         else:
             self.proton_lbl.setText("—")
         dst = self.store.get_series("swpc", "swpc:dst", limit=1)
@@ -177,6 +190,20 @@ class SunView(BaseView):
             self.dst_lbl.setText(f"{v:.0f} nT · {verdict} · {fmt_ts(o.ts)}")
         else:
             self.dst_lbl.setText("—")
+        locations = self.store.get_setting("locations") or []
+        if locations:
+            loc = locations[0]
+            key = loc.get("key") or f"{loc['lat']},{loc['lon']}"
+            decl = self.store.get_series("geomag", f"geomag:{key}:declination", limit=1)
+            if decl:
+                d = decl[-1]
+                self.decl_lbl.setText(
+                    f"{d.value:+.1f}° ({'E' if d.value >= 0 else 'W'} of true north) · {loc.get('name', '')} · {fmt_ts(d.ts)}"
+                )
+            else:
+                self.decl_lbl.setText(f"no geomag sample yet for {loc.get('name', 'primary location')}")
+        else:
+            self.decl_lbl.setText("no location configured")
         ssn = self.store.get_series("swpc", "swpc:ssn_observed", limit=1)
         ssn_p = self.store.get_series("swpc", "swpc:ssn_predicted", limit=1)
         if ssn:

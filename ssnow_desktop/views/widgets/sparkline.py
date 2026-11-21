@@ -6,6 +6,8 @@ from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
+from ... import theme
+
 
 class Sparkline(QWidget):
     def __init__(self, parent=None) -> None:
@@ -13,8 +15,8 @@ class Sparkline(QWidget):
         self.points: list[QPointF] = []
         self.min_value = 0.0
         self.max_value = 1.0
-        self.color = QColor("#0d6efd")
-        self.fill_color = QColor(13, 110, 253, 40)
+        self.color = QColor(theme.ACCENT)
+        self.fill_color = QColor(56, 189, 248, 40)
         self.setMinimumHeight(70)
 
     def set_points(self, points: list[tuple[float, float]], min_value: float | None = None, max_value: float | None = None) -> None:

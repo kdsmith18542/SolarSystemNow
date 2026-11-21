@@ -5,6 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -21,6 +22,8 @@ from ssnow_core.config import ensure_dirs
 from ssnow_core.logging_config import get_logger
 from ssnow_core.scheduler import run_due
 from ssnow_core.store import Store
+
+from ssnow_desktop import theme
 
 logger = get_logger("desktop")
 from ssnow_desktop.views import (
@@ -115,14 +118,10 @@ class MainWindow(QMainWindow):
         layout.setSpacing(0)
 
         self.sidebar = QListWidget()
+        self.sidebar.setObjectName("sidebar")
         self.sidebar.addItems(VIEW_NAMES)
         self.sidebar.setCurrentRow(0)
         self.sidebar.setFixedWidth(210)
-        self.sidebar.setStyleSheet(
-            "QListWidget { background: #1f1f1f; color: #eee; border: none; font-size: 14px; }"
-            "QListWidget::item { padding: 10px 14px; border-bottom: 1px solid #333; }"
-            "QListWidget::item:selected { background: #0d6efd; color: white; }"
-        )
 
         self.stack = QStackedWidget()
         self.views = []
@@ -141,28 +140,60 @@ class MainWindow(QMainWindow):
         bar.setContentsMargins(10, 6, 10, 6)
         bar.setSpacing(10)
         self.refresh_btn = QPushButton("Refresh now")
-        self.refresh_btn.setFixedWidth(120)
+        self.refresh_btn.setObjectName("primary")
+        self.refresh_btn.setFixedWidth(130)
         self.refresh_btn.clicked.connect(self.start_ingest)
         self.stream_btn = QPushButton("Streamer Mode (F11)")
-        self.stream_btn.setFixedWidth(150)
+        self.stream_btn.setFixedWidth(170)
         self.stream_btn.clicked.connect(self.toggle_streamer_mode)
         self.status_label = QLabel("Idle")
-        self.status_label.setStyleSheet("color: #666;")
+        self.status_label.setObjectName("faint")
         bar.addWidget(self.refresh_btn)
         bar.addWidget(self.stream_btn)
         bar.addStretch(1)
         bar.addWidget(self.status_label)
 
-        self._top_container = QWidget()
+        self._top_container = QFrame()
+        self._top_container.setObjectName("toolbar")
         self._top_container.setLayout(bar)
-        self._top_container.setFixedHeight(44)
-        self._top_container.setStyleSheet("background: #f5f5f5; border-bottom: 1px solid #ccc;")
+        self._top_container.setFixedHeight(46)
+
+        # Streamer ribbon: big, legible status strip visible only in F11 mode.
+        self._stream_banner = QFrame()
+        self._stream_banner.setObjectName("streamBanner")
+        self._stream_banner.setFixedHeight(66)
+        banner_layout = QHBoxLayout(self._stream_banner)
+        banner_layout.setContentsMargins(18, 8, 18, 8)
+        banner_layout.setSpacing(26)
+        self._stream_fields: dict[str, tuple[QLabel, QLabel]] = {}
+        for key, label in (
+            ("threat", "THREAT"),
+            ("kp", "Kp"),
+            ("bz", "Bz"),
+            ("proton", "PROTON"),
+            ("dst", "Dst"),
+            ("aurora", "AURORA"),
+            ("clock", "UTC"),
+        ):
+            cell = QVBoxLayout()
+            cell.setSpacing(0)
+            cap = QLabel(label)
+            cap.setObjectName("streamLabel")
+            val = QLabel("—")
+            val.setObjectName("streamValue")
+            cell.addWidget(cap)
+            cell.addWidget(val)
+            self._stream_fields[key] = (cap, val)
+            banner_layout.addLayout(cell)
+        banner_layout.addStretch(1)
+        self._stream_banner.hide()
 
         root = QVBoxLayout()
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         root.addWidget(self._top_container)
-        root.addWidget(central)
+        root.addWidget(central, 1)
+        root.addWidget(self._stream_banner)
         self._root = QWidget()
         self._root.setLayout(root)
         self.setCentralWidget(self._root)
@@ -187,6 +218,16 @@ class MainWindow(QMainWindow):
         self._refresh_timer.setInterval(15 * 60 * 1000)
         self._refresh_timer.timeout.connect(self.start_ingest)
         self._refresh_timer.start()
+
+        # Stream ribbon clock/status ticker (only does work in streamer mode).
+        self._stream_clock = QTimer(self)
+        self._stream_clock.setInterval(1000)
+        self._stream_clock.timeout.connect(self._tick_stream_banner)
+        self._stream_clock.start()
+
+    def _tick_stream_banner(self) -> None:
+        if self._streamer_mode:
+            self._update_stream_banner()
 
     def _on_view_changed(self, index: int) -> None:
         try:
@@ -223,13 +264,89 @@ class MainWindow(QMainWindow):
         if self._streamer_mode:
             self.sidebar.hide()
             self._top_container.hide()
+            self._stream_banner.show()
             self.showFullScreen()
             self.stream_btn.setText("Exit Streamer (Esc)")
+            self._update_stream_banner()
         else:
             self.sidebar.show()
             self._top_container.show()
+            self._stream_banner.hide()
             self.showNormal()
             self.stream_btn.setText("Streamer Mode (F11)")
+
+    def _update_stream_banner(self) -> None:
+        """Refresh the big broadcast ribbon from the newest store values."""
+        if not self._stream_fields:
+            return
+        def _series(series: str, source: str = "swpc"):
+            try:
+                rows = self.store.get_series(source, series, limit=1)
+                return rows[-1] if rows else None
+            except Exception:
+                return None
+
+        fields = self._stream_fields
+        try:
+            kp = _series("swpc:kp")
+            kp_v = kp.value if kp else 0.0
+            level = 0
+            try:
+                now_view = self.views[0]
+                if hasattr(now_view, "dial"):
+                    level = now_view.dial.level
+            except Exception:
+                pass
+            threat_names = ("QUIET", "UNSETTLED", "ELEVATED", "STORM")
+            threat_colors = (theme.OK, theme.WARN, theme.ORANGE, theme.DANGER)
+            fields["threat"][1].setText(threat_names[level])
+            fields["threat"][1].setStyleSheet(f"color: {threat_colors[level]};")
+
+            fields["kp"][1].setText(f"{kp_v:.1f}")
+            fields["kp"][1].setStyleSheet(
+                f"color: {theme.DANGER if kp_v >= 6 else theme.WARN if kp_v >= 4 else theme.OK};"
+            )
+
+            bz = _series("swpc:imf_bz_gsm")
+            bz_v = bz.value if bz else 0.0
+            fields["bz"][1].setText(f"{bz_v:.1f} nT")
+            fields["bz"][1].setStyleSheet(
+                f"color: {theme.DANGER if bz_v <= -10 else theme.WARN if bz_v < 0 else theme.TEXT};"
+            )
+
+            proton = _series("swpc:proton_flux_gte10MeV")
+            p_v = proton.value if proton else 0.0
+            s_scale = "S4" if p_v >= 10000 else "S3" if p_v >= 1000 else "S2" if p_v >= 100 else "S1" if p_v >= 10 else "—"
+            fields["proton"][1].setText(s_scale)
+            fields["proton"][1].setStyleSheet(
+                f"color: {theme.DANGER if p_v >= 1000 else theme.WARN if p_v >= 10 else theme.TEXT};"
+            )
+
+            dst = _series("swpc:dst")
+            dst_v = dst.value if dst else 0.0
+            fields["dst"][1].setText(f"{dst_v:.0f} nT")
+            fields["dst"][1].setStyleSheet(
+                f"color: {theme.DANGER if dst_v <= -100 else theme.WARN if dst_v <= -50 else theme.TEXT};"
+            )
+
+            locations = self.store.get_setting("locations") or []
+            loc = locations[0] if locations else {"lat": 51.5, "name": "Local"}
+            lat = abs(float(loc.get("lat", 51.5)))
+            threshold = 1 if lat >= 65 else 2 if lat >= 60 else 4 if lat >= 55 else 6 if lat >= 50 else 7 if lat >= 45 else 8
+            if kp_v >= threshold:
+                aurora_txt, aurora_color = "VISIBLE", theme.OK
+            elif kp_v >= threshold - 1 and threshold > 1:
+                aurora_txt, aurora_color = "HORIZON", theme.WARN
+            else:
+                aurora_txt, aurora_color = "UNLIKELY", theme.TEXT_FAINT
+            fields["aurora"][1].setText(aurora_txt)
+            fields["aurora"][1].setStyleSheet(f"color: {aurora_color};")
+
+            from datetime import datetime, timezone
+
+            fields["clock"][1].setText(datetime.now(timezone.utc).strftime("%H:%M:%S"))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Stream banner update failed: %s", exc)
 
     def start_ingest(self) -> None:
         if self._thread is not None and self._thread.isRunning():
@@ -276,6 +393,8 @@ class MainWindow(QMainWindow):
                 logger.warning("View %d refresh failed after ingest: %s", i, exc)
 
         self._check_and_notify_alerts()
+        if self._streamer_mode:
+            self._update_stream_banner()
 
     def _check_and_notify_alerts(self) -> None:
         try:

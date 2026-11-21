@@ -100,6 +100,13 @@ export interface SunSummary {
   bt: { value: number; ts: string } | null;
   dst: { value: number; ts: string } | null;
   proton_gte10: { value: number; ts: string } | null;
+  proton_gte50: { value: number; ts: string } | null;
+  proton_gte100: { value: number; ts: string } | null;
+  wind_speed: { value: number; ts: string } | null;
+  wind_density: { value: number; ts: string } | null;
+  aurora_oval: { value: number; ts: string } | null;
+  aurora_mean: { value: number; ts: string } | null;
+  declination: { value: number; ts: string; location: string } | null;
   ssn: { value: number; ts: string } | null;
   ssn_predicted: { value: number; ts: string } | null;
 }

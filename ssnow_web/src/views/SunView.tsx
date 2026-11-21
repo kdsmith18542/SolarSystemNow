@@ -88,8 +88,8 @@ export default function SunView() {
         <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-800">
           <h2 className="text-sm text-slate-400 uppercase tracking-wider mb-2">Aurora (OVATION)</h2>
           <div className="text-4xl font-bold text-emerald-400">{summary?.aurora_max ? summary.aurora_max.value.toFixed(0) : '—'}</div>
-          <div className="text-slate-300">hemispheric max intensity</div>
-          <div className="text-xs text-slate-500">{summary?.aurora_max ? fmtTs(summary.aurora_max.ts) : '—'} · OVATION</div>
+          <div className="text-slate-300">hemispheric max intensity{summary?.aurora_mean ? ` · band mean ${summary.aurora_mean.value.toFixed(0)}` : ''}</div>
+          <div className="text-xs text-slate-500">{summary?.aurora_oval ? `oval equatorward edge ${summary.aurora_oval.value.toFixed(1)}°` : '—'} · {summary?.aurora_max ? fmtTs(summary.aurora_max.ts) : 'OVATION'}</div>
         </div>
         <WindCard />
         <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-800">
@@ -110,13 +110,21 @@ export default function SunView() {
           <h2 className="text-sm text-slate-400 uppercase tracking-wider mb-2">GOES Protons ≥10 MeV</h2>
           <div className="text-4xl font-bold text-fuchsia-400">{summary?.proton_gte10 ? summary.proton_gte10.value.toFixed(1) : '—'}</div>
           <div className="text-slate-300">pfu · {summary?.proton_gte10 ? (summary.proton_gte10.value >= 10000 ? 'S4' : summary.proton_gte10.value >= 1000 ? 'S3' : summary.proton_gte10.value >= 100 ? 'S2' : summary.proton_gte10.value >= 10 ? 'S1' : 'below S1') : 'S-scale'}</div>
-          <div className="text-xs text-slate-500">{summary?.proton_gte10 ? fmtTs(summary.proton_gte10.ts) : '—'} · GOES</div>
+          <div className="text-xs text-slate-500">
+            ≥50 MeV {summary?.proton_gte50 ? summary.proton_gte50.value.toFixed(2) : '—'} · ≥100 MeV {summary?.proton_gte100 ? summary.proton_gte100.value.toFixed(2) : '—'} · {summary?.proton_gte10 ? fmtTs(summary.proton_gte10.ts) : 'GOES'}
+          </div>
         </div>
         <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-800">
           <h2 className="text-sm text-slate-400 uppercase tracking-wider mb-2">Dst Index</h2>
           <div className="text-4xl font-bold text-violet-400">{summary?.dst ? summary.dst.value.toFixed(0) : '—'}</div>
           <div className="text-slate-300">nT · {summary?.dst ? (summary.dst.value <= -100 ? 'intense storm' : summary.dst.value <= -50 ? 'moderate storm' : 'quiet') : 'Kyoto WDC'}</div>
           <div className="text-xs text-slate-500">{summary?.dst ? fmtTs(summary.dst.ts) : '—'}</div>
+        </div>
+        <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-800">
+          <h2 className="text-sm text-slate-400 uppercase tracking-wider mb-2">Magnetic Declination</h2>
+          <div className="text-4xl font-bold text-sky-300">{summary?.declination ? summary.declination.value.toFixed(1) : '—'}</div>
+          <div className="text-slate-300">° {summary?.declination ? (summary.declination.value >= 0 ? 'E of true north' : 'W of true north') : 'compass correction'}</div>
+          <div className="text-xs text-slate-500">{summary?.declination ? `${summary.declination.location} · ${fmtTs(summary.declination.ts)} · NOAA WMM` : 'primary location · NOAA'}</div>
         </div>
       </div>
     </div>

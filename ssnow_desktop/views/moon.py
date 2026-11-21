@@ -6,7 +6,7 @@ import math
 from datetime import datetime, timezone
 
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen, QRadialGradient
 from PySide6.QtWidgets import QFormLayout, QLabel, QVBoxLayout, QWidget
 
 from .base_view import BaseView
@@ -38,6 +38,17 @@ class PhaseDisk(QWidget):
     def set_illumination(self, value: float) -> None:
         self.set_phase(value, None)
 
+    def _lit_brush(self) -> QBrush:
+        """Warm lunar gradient: bright at upper-center, soft at the limb."""
+        rect = self.rect().adjusted(12, 12, -12, -12)
+        cx, cy = rect.center().x(), rect.center().y()
+        radius = min(rect.width(), rect.height()) / 2.0
+        grad = QRadialGradient(cx, cy - radius * 0.15, radius * 1.05)
+        grad.setColorAt(0.0, QColor("#f8fafc"))
+        grad.setColorAt(0.55, QColor("#e8eef7"))
+        grad.setColorAt(1.0, QColor("#b6c2d4"))
+        return QBrush(grad)
+
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -61,7 +72,7 @@ class PhaseDisk(QWidget):
         if self.illumination >= 0.995:
             # Full moon
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor("#fef08a"))
+            painter.setBrush(self._lit_brush())
             painter.drawEllipse(QPointF(cx, cy), radius, radius)
             return
 
@@ -81,10 +92,11 @@ class PhaseDisk(QWidget):
             outer_points.append(QPointF(x, y))
 
         # 2. Terminator ellipse from bottom (0, +R) back to top (0, -R)
-        # Terminator x coordinate is x = cx + R * cos(phi) * (-cos(phase_angle))
-        # When phase_angle < 90 (crescent): cos(phase_angle) > 0, terminator bends towards lit limb
-        # When phase_angle > 90 (gibbous): cos(phase_angle) < 0, terminator bends away from lit limb into unlit side
-        terminator_factor = -math.cos(math.radians(self.phase_angle))
+        # With delta = phase angle, the terminator x-offset is R * cos(delta):
+        # delta=0 (full) -> +R coincides with the lit limb; delta=90 (half) -> 0;
+        # delta=180 (new) -> -R coincides with the dark limb. Gibbous (delta>90,
+        # cos<0) therefore bends into the unlit side; crescent into the lit side.
+        terminator_factor = math.cos(math.radians(self.phase_angle))
         inner_points: list[QPointF] = []
         for i in range(steps, -1, -1):
             phi = -math.pi / 2.0 + (math.pi * i / steps)
@@ -101,7 +113,7 @@ class PhaseDisk(QWidget):
         path.closeSubpath()
 
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#fef08a"))  # Lunar warm yellow
+        painter.setBrush(self._lit_brush())
         painter.drawPath(path)
 
 
@@ -116,7 +128,7 @@ class MoonView(BaseView):
 
         self.phase_lbl = QLabel("—")
         self.phase_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.phase_lbl.setStyleSheet("font-size: 34px; font-weight: 700; color: #0d6efd;")
+        self.phase_lbl.setObjectName("cardValue")
         layout.addWidget(self.phase_lbl)
 
         self.disk = PhaseDisk()

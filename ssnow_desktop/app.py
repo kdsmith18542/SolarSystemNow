@@ -6,6 +6,7 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
+from . import theme
 from .main_window import MainWindow
 
 
@@ -13,6 +14,8 @@ def run(argv=None) -> int:
     app = QApplication(argv or sys.argv)
     app.setApplicationName("Solar System Now")
     app.setOrganizationName("ss-now")
+    app.setStyle("Fusion")
+    app.setStyleSheet(theme.STYLESHEET)
     window = MainWindow()
     window.show()
     return app.exec()

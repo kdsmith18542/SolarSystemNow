@@ -43,7 +43,7 @@ class SettingsView(BaseView):
         remote_row.addWidget(self.remote_check)
         remote_row.addWidget(self.remote_url)
         remote_note = QLabel("Takes effect after restart. In remote mode, backup export is disabled.")
-        remote_note.setStyleSheet("color: #666; font-size: 11px;")
+        remote_note.setObjectName("faint")
         form.addRow("Server connection:", remote_row)
         form.addRow("", remote_note)
 
@@ -108,7 +108,7 @@ class SettingsView(BaseView):
         form.addRow("Snapshot retention:", self.retention)
 
         self.db_path_lbl = QLabel()
-        self.db_path_lbl.setStyleSheet("color: #666; font-size: 12px;")
+        self.db_path_lbl.setObjectName("faint")
         form.addRow("Database path:", self.db_path_lbl)
 
         btn_row = QHBoxLayout()

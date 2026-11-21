@@ -90,6 +90,7 @@ export default function Events() {
               <h2 className="text-xl font-bold text-slate-100">{selected.title}</h2>
               <button onClick={() => setSelected(null)} className="text-slate-400 hover:text-white">✕</button>
             </div>
+            <EventBadges ev={selected} />
             <div className="grid grid-cols-2 gap-4 text-sm">
               <div><span className="text-slate-500 block">Source</span><span className="text-slate-300">{selected.source}</span></div>
               <div><span className="text-slate-500 block">Category</span><span className="text-slate-300">{selected.category}</span></div>
@@ -104,6 +105,30 @@ export default function Events() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function EventBadges({ ev }: { ev: Event }) {
+  const ex = (ev.extra ?? {}) as Record<string, any>;
+  const badges: Array<{ text: string; color: string }> = [];
+  if (ex.tsunami === 1 || ex.tsunami === true || ex.tsunami === '1') badges.push({ text: '🌊 TSUNAMI FLAG — check USGS/PTWC', color: '#22d3ee' });
+  if (ex.alert) badges.push({ text: `PAGER alert: ${ex.alert}`, color: '#f87171' });
+  if (ex.felt) badges.push({ text: `Felt reports: ${ex.felt}`, color: '#fbbf24' });
+  if (ex.severity) badges.push({ text: `NWS severity: ${ex.severity} · ${ex.certainty ?? ''}/${ex.urgency ?? ''}`, color: '#fb923c' });
+  if (ex.expires) badges.push({ text: `Expires: ${ex.expires}`, color: '#94a3b8' });
+  if (ex.hazardous || ex.hazardous_candidate) badges.push({ text: `⚠️ POTENTIALLY HAZARDOUS ${ex.kind ?? 'asteroid'} — ${ex.dist_lunar ?? ex.miss_lunar ?? '?'} LD`, color: '#f87171' });
+  if (ex.is_comet) badges.push({ text: '☄️ Comet close approach (JPL CAD)', color: '#22d3ee' });
+  if (ex.kind === 'sentry') badges.push({ text: `🎯 Sentry impact watch: PS ${ex.ps_cum} · IP ${ex.impact_probability} · ${ex.year_range ?? ''}`, color: '#f87171' });
+  if (ex.kind === 'lsr') badges.push({ text: `⛈️ Storm report: ${ex.typetext} via ${ex.wfo} (${ex.source})`, color: '#60a5fa' });
+  if (ex.speed || ex.type) badges.push({ text: `CME: speed ${ex.speed} km/s · type ${ex.type} · half-angle ${ex.half_angle}`, color: '#f472b6' });
+  if (!badges.length) return null;
+  return (
+    <div className="flex flex-wrap gap-2 mb-4">
+      {badges.map((b, i) => (
+        <span key={i} className="text-[11px] font-semibold px-2.5 py-1 rounded-full"
+          style={{ color: b.color, background: `${b.color}1a`, border: `1px solid ${b.color}55` }}>{b.text}</span>
+      ))}
     </div>
   );
 }

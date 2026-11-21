@@ -284,6 +284,18 @@ def sun_summary() -> dict[str, Any]:
     bt = store.get_series("swpc", "swpc:imf_bt", limit=1)
     dst = store.get_series("swpc", "swpc:dst", limit=1)
     proton = store.get_series("swpc", "swpc:proton_flux_gte10MeV", limit=1)
+    proton50 = store.get_series("swpc", "swpc:proton_flux_gte50MeV", limit=1)
+    proton100 = store.get_series("swpc", "swpc:proton_flux_gte100MeV", limit=1)
+    wind = store.get_series("swpc", "swpc:solarwind_speed", limit=1)
+    wind_dens = store.get_series("swpc", "swpc:solarwind_density", limit=1)
+    aurora_oval = store.get_series("aurora", "aurora:oval_equatorward_deg", limit=1)
+    aurora_mean = store.get_series("aurora", "aurora:intensity_mean_band", limit=1)
+    # Magnetic declination is location-dependent: report it for the primary location.
+    locations = store.get_setting("locations") or []
+    declination = None
+    if locations:
+        key = locations[0].get("key") or f"{locations[0]['lat']},{locations[0]['lon']}"
+        declination = store.get_series("geomag", f"geomag:{key}:declination", limit=1)
     ssn = store.get_series("swpc", "swpc:ssn_observed", limit=1)
     ssn_pred = store.get_series("swpc", "swpc:ssn_predicted", limit=1)
     return {
@@ -300,6 +312,13 @@ def sun_summary() -> dict[str, Any]:
         "bt": {"value": bt[-1].value, "ts": bt[-1].ts.isoformat()} if bt else None,
         "dst": {"value": dst[-1].value, "ts": dst[-1].ts.isoformat()} if dst else None,
         "proton_gte10": {"value": proton[-1].value, "ts": proton[-1].ts.isoformat()} if proton else None,
+        "proton_gte50": {"value": proton50[-1].value, "ts": proton50[-1].ts.isoformat()} if proton50 else None,
+        "proton_gte100": {"value": proton100[-1].value, "ts": proton100[-1].ts.isoformat()} if proton100 else None,
+        "wind_speed": {"value": wind[-1].value, "ts": wind[-1].ts.isoformat()} if wind else None,
+        "wind_density": {"value": wind_dens[-1].value, "ts": wind_dens[-1].ts.isoformat()} if wind_dens else None,
+        "aurora_oval": {"value": aurora_oval[-1].value, "ts": aurora_oval[-1].ts.isoformat()} if aurora_oval else None,
+        "aurora_mean": {"value": aurora_mean[-1].value, "ts": aurora_mean[-1].ts.isoformat()} if aurora_mean else None,
+        "declination": {"value": declination[-1].value, "ts": declination[-1].ts.isoformat(), "location": locations[0].get("name")} if declination else None,
         "ssn": {"value": ssn[-1].value, "ts": ssn[-1].ts.isoformat()} if ssn else None,
         "ssn_predicted": {"value": ssn_pred[-1].value, "ts": ssn_pred[-1].ts.isoformat()} if ssn_pred else None,
     }

@@ -13,7 +13,6 @@ license = { text = "MIT" }
 dependencies = [
     "httpx>=0.27",
     "pydantic>=2.7",
-    "PySide6>=6.7",
     "skyfield>=1.49",
     "numpy",
     "platformdirs",
@@ -24,7 +23,8 @@ ssnow = "ssnow_core.cli:main"
 ssnow-web = "ssnow_web.server:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "respx>=0.23"]
+gui = ["PySide6>=6.7"]
+dev = ["pytest>=8", "respx>=0.23", "PySide6>=6.7"]
 web = ["fastapi>=0.110", "uvicorn>=0.30", "python-multipart>=0.0.7"]
 
 [tool.setuptools.packages.find]

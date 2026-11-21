@@ -1,0 +1,24 @@
+# Keep the Docker build context small: only what Dockerfile.web copies.
+.git
+.github
+.venv
+venv
+__pycache__
+*.py[cod]
+dist
+build
+packaging
+docs
+tests
+ssnow_desktop
+ssnow_web/node_modules
+ssnow_web/src
+ssnow_web/e2e
+ssnow_web/playwright-report
+ssnow_web/test-results
+static/assets/*.map
+*.AppImage
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+!ssnow_core/data/**

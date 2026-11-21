@@ -13,7 +13,18 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("SSNOW_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("SSNOW_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("SSNOW_CACHE_DIR", str(tmp_path / "cache"))
-    return TestClient(app)
+    import ssnow_web.api as api
+
+    # The module caches its Store in a global: reset it so every test opens
+    # its own database instead of inheriting the first test's data.
+    if api._store is not None:
+        api._store.close()
+    api._store = None
+    with TestClient(app) as test_client:
+        yield test_client
+    if api._store is not None:
+        api._store.close()
+    api._store = None
 
 
 def test_api_health(client):
@@ -107,6 +118,12 @@ def test_api_weather_now(client):
 def test_api_sun_summary_new_fields(client):
     """Extended summary fields (proton channels, wind, aurora oval, declination)
     must always be present — null when no data, never fabricated."""
+    store = get_store()
+    # Startup seeding populates fixtures; clear observations so this test
+    # exercises the explicit no-data contract.
+    with store.transaction() as c:
+        c.execute("DELETE FROM observations")
+
     res = client.get("/api/sun/summary")
     assert res.status_code == 200
     data = res.json()
@@ -120,10 +137,9 @@ def test_api_sun_summary_new_fields(client):
         "declination",
     ):
         assert key in data
-        assert data[key] is None  # empty temp store: no data yet
+        assert data[key] is None  # cleared store: no data yet
 
     # With real observations the values surface.
-    store = get_store()
     from datetime import datetime, timezone
 
     from ssnow_core.models import Observation

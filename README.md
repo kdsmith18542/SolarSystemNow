@@ -27,7 +27,7 @@ Linux desktop + local web dashboard for reviewing **current and historical real 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e .[dev,web]
+pip install -e .[dev,gui,web]
 ```
 
 ## Run

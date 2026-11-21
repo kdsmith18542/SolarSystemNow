@@ -87,6 +87,28 @@ jobs:
           path: ssnow_web/playwright-report/
           retention-days: 7
 
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build web image
+        run: docker build -f packaging/Dockerfile.web -t ssnow-web:ci .
+      - name: Run container and check health + seeded data
+        run: |
+          docker run -d --rm --name ssnow-ci -p 18300:8123 ssnow-web:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:18300/api/health >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          curl -fsS http://localhost:18300/api/health
+          curl -fsS "http://localhost:18300/api/events?limit=1" | grep -q '"count"'
+          docker stop ssnow-ci
+      - name: Image must not bundle the desktop toolkit
+        run: |
+          if docker run --rm ssnow-web:ci python -c "import PySide6" 2>/dev/null; then
+            echo "PySide6 must not be installed in the web image" >&2; exit 1
+          fi
+
   package:
     runs-on: ubuntu-latest
     steps:

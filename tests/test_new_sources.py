@@ -119,6 +119,44 @@ def test_aurora_summary(tmp_store):
     assert oval[0].value == 60.0
 
 
+def test_aurora_oval_boundary_polylines():
+    """The oval obs carries display-ready equatorward boundary polylines."""
+    import json as _json
+
+    from ssnow_core.sources.aurora import _oval_boundary
+
+    # Synthetic grid: a ring of high intensity at |lat| ~ 60-62 in both
+    # hemispheres plus noise below the threshold further equatorward.
+    points = []
+    for lon in range(-180, 180, 10):
+        points.append((float(lon), 61.0, 80.0))
+        points.append((float(lon), 45.0, 1.0))  # below 10% of peak
+        points.append((float(lon), -60.0, 70.0))
+        points.append((float(lon), -40.0, 1.0))
+    north = _oval_boundary(points, "north")
+    south = _oval_boundary(points, "south")
+    assert len(north) >= 30 and len(south) >= 30
+    assert all(lat > 0 for _lon, lat in north)
+    assert all(lat < 0 for _lon, lat in south)
+    lons = [lon for lon, _lat in north]
+    assert lons == sorted(lons)
+    # Boundary follows the qualifying ring, not the noise.
+    assert all(abs(lat - 61.0) < 2.0 for _lon, lat in north)
+    assert all(abs(lat + 60.0) < 2.0 for _lon, lat in south)
+    # No qualifying auroral-zone points -> empty boundary (no fabrication).
+    assert _oval_boundary([(0.0, 10.0, 50.0)], "north") == []
+
+    adapter = AuroraAdapter(SPECS["aurora"])
+    _, obs = adapter.parse(
+        _json.dumps({"coordinates": [[float(lon), 62.0, 50.0] for lon in range(-180, 180, 30)]}).encode(),
+        "application/json",
+        _now(),
+    )
+    oval = [o for o in obs if o.series == "aurora:oval_equatorward_deg"][0]
+    assert oval.extra_json["boundary_north"]
+    assert len(oval.extra_json["boundary_north"]) > 1
+
+
 def test_geomag_ingest(tmp_store):
     tmp_store.set_setting("locations", [{"name": "London", "lat": 51.5, "lon": -0.12, "key": "51.5,-0.12"}])
     adapter = GeomagAdapter(SPECS["geomag"])

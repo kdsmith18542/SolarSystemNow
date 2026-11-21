@@ -58,6 +58,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <script>
 const geojson = %%GEOJSON%%;
 const OVAL_EDGE = %%OVAL%%;  // equatorward boundary in degrees, or null
+const OVAL_N = %%OVAL_N%%;   // [[lon, lat], ...] north oval polyline
+const OVAL_S = %%OVAL_S%%;   // [[lon, lat], ...] south oval polyline
 const CATEGORY_COLORS = {
   earthquake: '#ef4444',
   volcano: '#dc2626',
@@ -98,12 +100,25 @@ function initMap() {
       map.addLayer({ id: 'spc-fill', type: 'fill', source: 'spc', paint: { 'fill-color': '#eab308', 'fill-opacity': 0.25 } });
       map.addLayer({ id: 'spc-line', type: 'line', source: 'spc', paint: { 'line-color': '#eab308', 'line-width': 1.5 } });
     }
-    // OVATION aurora oval equatorward boundary: constant-latitude dashed
-    // lines in both hemispheres (oval approximation from obs, not a true oval).
+    // OVATION aurora oval: true equatorward-boundary polylines derived from
+    // the grid when available, otherwise constant-latitude fallback lines.
+    const ovalFeatures = [];
+    const lineFeature = (coords, title) => ({ type: 'Feature', properties: { title: title }, geometry: { type: 'LineString', coordinates: coords } });
+    if (Array.isArray(OVAL_N) && OVAL_N.length > 1) {
+      ovalFeatures.push(lineFeature(OVAL_N, 'OVATION auroral oval (north)'));
+    }
+    if (Array.isArray(OVAL_S) && OVAL_S.length > 1) {
+      ovalFeatures.push(lineFeature(OVAL_S, 'OVATION auroral oval (south)'));
+    }
     if (OVAL_EDGE !== null && OVAL_EDGE !== undefined && !isNaN(OVAL_EDGE)) {
-      const ovalLine = (lat) => ({ type: 'Feature', properties: { title: 'OVATION aurora oval edge ≈ ' + lat.toFixed(1) + '°' }, geometry: { type: 'LineString', coordinates: [[-180, lat], [180, lat]] } });
-      map.addSource('aurora-oval', { type: 'geojson', data: { type: 'FeatureCollection', features: [ovalLine(OVAL_EDGE), ovalLine(-OVAL_EDGE)] } });
-      map.addLayer({ id: 'aurora-oval-line', type: 'line', source: 'aurora-oval', paint: { 'line-color': '#4ade80', 'line-width': 1.5, 'line-dasharray': [4, 2] } });
+      if (ovalFeatures.length === 0) {
+        ovalFeatures.push(lineFeature([[-180, OVAL_EDGE], [180, OVAL_EDGE]], 'OVATION oval edge ≈ ' + OVAL_EDGE.toFixed(1) + '°'));
+        ovalFeatures.push(lineFeature([[-180, -OVAL_EDGE], [180, -OVAL_EDGE]], 'OVATION oval edge ≈ ' + OVAL_EDGE.toFixed(1) + '°'));
+      }
+    }
+    if (ovalFeatures.length) {
+      map.addSource('aurora-oval', { type: 'geojson', data: { type: 'FeatureCollection', features: ovalFeatures } });
+      map.addLayer({ id: 'aurora-oval-line', type: 'line', source: 'aurora-oval', paint: { 'line-color': '#4ade80', 'line-width': 2, 'line-dasharray': [4, 2] } });
     }
     for (const feature of geojson.features) {
       if (!feature.geometry || feature.geometry.type !== 'Point') continue;
@@ -243,16 +258,23 @@ class MapView(BaseView):
         lon, lat = self._center if self._center is not None else (20.0, 10.0)
         zoom = self._zoom if self._zoom is not None else 1.1
         oval = None
+        oval_n: list = []
+        oval_s: list = []
         if self._aurora_box is not None and self._aurora_box.isChecked():
             oval_obs = self.store.get_series("aurora", "aurora:oval_equatorward_deg", limit=1)
             if oval_obs:
                 oval = oval_obs[-1].value
+                extra = oval_obs[-1].extra_json or {}
+                oval_n = extra.get("boundary_north") or []
+                oval_s = extra.get("boundary_south") or []
         html = (
             HTML_TEMPLATE.replace("%%CSS%%", MAPLIBRE_CSS)
             .replace("%%JS%%", MAPLIBRE_JS)
             .replace("%%STYLE%%", MAP_STYLE)
             .replace("%%RADAR%%", "true" if (self._radar_box is not None and self._radar_box.isChecked()) else "false")
             .replace("%%OVAL%%", f"{oval:.1f}" if oval is not None else "null")
+            .replace("%%OVAL_N%%", json.dumps(oval_n))
+            .replace("%%OVAL_S%%", json.dumps(oval_s))
             .replace("%%LON%%", f"{lon:.4f}")
             .replace("%%LAT%%", f"{lat:.4f}")
             .replace("%%ZOOM%%", f"{zoom:.1f}")

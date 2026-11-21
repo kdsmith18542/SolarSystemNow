@@ -50,7 +50,7 @@ export default function MapView() {
   const markersRef = useRef<Marker[]>([]);
   const mapRef = useRef<Map | null>(null);
   const eventsRef = useRef<Event[]>([]);
-  const ovalRef = useRef<number | null>(null);
+  const ovalRef = useRef<{ edge: number | null; north: number[][]; south: number[][] }>({ edge: null, north: [], south: [] });
 
   const drawMarkers = () => {
     const map = mapRef.current;
@@ -68,23 +68,28 @@ export default function MapView() {
       if (map.getLayer('aurora-oval-line')) map.removeLayer('aurora-oval-line');
       if (map.getSource('aurora-oval')) map.removeSource('aurora-oval');
     } catch { /* ignore */ }
-    // OVATION aurora oval equatorward boundary (constant-latitude line per
-    // hemisphere — the oval approximation carried in obs, not a true oval).
-    const edge = ovalRef.current;
-    if (auroraOval && edge != null && (map as any).addSource) {
+    // OVATION aurora oval: true equatorward-boundary polylines derived from
+    // the grid when available (stored in the obs extra), otherwise a
+    // constant-latitude fallback line per hemisphere.
+    const oval = ovalRef.current;
+    if (auroraOval && (oval.edge != null || oval.north.length > 1 || oval.south.length > 1) && (map as any).addSource) {
       try {
-        const line = (lat: number) => ({
+        const features: any[] = [];
+        const line = (coords: number[][], title: string) => ({
           type: 'Feature' as const,
-          properties: { title: `OVATION aurora oval edge ≈ ${lat.toFixed(1)}°` },
-          geometry: { type: 'LineString' as const, coordinates: [[-180, lat], [180, lat]] },
+          properties: { title },
+          geometry: { type: 'LineString' as const, coordinates: coords },
         });
-        (map as any).addSource('aurora-oval', {
-          type: 'geojson',
-          data: { type: 'FeatureCollection', features: [line(edge), line(-edge)] },
-        });
+        if (oval.north.length > 1) features.push(line(oval.north, 'OVATION auroral oval (north)'));
+        if (oval.south.length > 1) features.push(line(oval.south, 'OVATION auroral oval (south)'));
+        if (!features.length && oval.edge != null) {
+          features.push(line([[-180, oval.edge], [180, oval.edge]], `OVATION oval edge ≈ ${oval.edge.toFixed(1)}°`));
+          features.push(line([[-180, -oval.edge], [180, -oval.edge]], `OVATION oval edge ≈ ${oval.edge.toFixed(1)}°`));
+        }
+        (map as any).addSource('aurora-oval', { type: 'geojson', data: { type: 'FeatureCollection', features } });
         map.addLayer({
           id: 'aurora-oval-line', type: 'line', source: 'aurora-oval',
-          paint: { 'line-color': '#4ade80', 'line-width': 1.5, 'line-dasharray': [4, 2] },
+          paint: { 'line-color': '#4ade80', 'line-width': 2, 'line-dasharray': [4, 2] },
         } as any);
       } catch { /* ignore if style not ready */ }
     }
@@ -147,7 +152,12 @@ export default function MapView() {
       });
       api.obs('aurora', 'aurora:oval_equatorward_deg', 1).then((r) => {
         if (r.points[0]) {
-          ovalRef.current = r.points[0].value;
+          const extra = (r.points[0].extra ?? {}) as any;
+          ovalRef.current = {
+            edge: r.points[0].value,
+            north: Array.isArray(extra.boundary_north) ? extra.boundary_north : [],
+            south: Array.isArray(extra.boundary_south) ? extra.boundary_south : [],
+          };
           drawMarkers();
         }
       }).catch(() => null);

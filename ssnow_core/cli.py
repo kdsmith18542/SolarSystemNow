@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 
-from .config import data_dir, ensure_dirs
+from .config import ensure_dirs
 from .logging_config import setup_logging
 from .scheduler import run_due
 from .sources.registry import build_adapter
@@ -87,9 +87,10 @@ def main(argv=None) -> int:
     store = Store()
 
     try:
-        from .seed import seed_if_empty
+        if args.command in ("ingest", "gui"):
+            from .seed import seed_if_empty
 
-        seed_if_empty(store)
+            seed_if_empty(store)
 
         if args.command == "ingest":
             import httpx
@@ -97,7 +98,10 @@ def main(argv=None) -> int:
             with httpx.Client() as client:
                 if args.source:
                     adapter = build_adapter(args.source)
-                    reports = [adapter.ingest(store, client)] if adapter else []
+                    if adapter is None:
+                        print(f"unknown source: {args.source}")
+                        return 1
+                    reports = [adapter.ingest(store, client)]
                 else:
                     reports = run_due(store, client)
             for report in reports:
@@ -112,15 +116,10 @@ def main(argv=None) -> int:
                 print(f"{key}: {value}")
             return 0
         if args.command == "prune":
-            from datetime import datetime, timedelta, timezone
-
             days = args.days if args.days is not None else int(store.get_setting("retention_days") or 90)
-            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
             n_snaps = store.prune_snapshots(days)
-            n_obs = 0
-            for src in ["swpc", "openmeteo", "aurora", "solarwind", "moon"]:
-                n_obs += store.prune_observations_before(src, f"{src}:%", cutoff)
-            n_assets = store.prune_assets_for_source("sun", keep_latest=14)
+            n_obs = store.prune_observations(days)
+            n_assets = store.prune_assets_for_source("sun", keep_latest=14, prefix=True)
             print(f"Pruned {n_snaps} snapshots, {n_obs} observations, {n_assets} old assets (retention: {days} days)")
             return 0
         if args.command == "export":

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../services/api';
 import type { SourceState } from '../services/api';
+import { useRefreshTick } from '../hooks/useRefreshTick';
 
 function fmtTs(ts: string | null) {
   if (!ts) return '—';
@@ -28,6 +29,7 @@ function StatChip({ label, value, color }: { label: string; value: string | numb
 }
 
 export default function Sources() {
+  const tick = useRefreshTick();
   const [sources, setSources] = useState<SourceState[]>([]);
   const [loading, setLoading] = useState(true);
   const [ingesting, setIngesting] = useState(false);
@@ -40,7 +42,7 @@ export default function Sources() {
       .catch((e) => { setMsg(String(e)); setLoading(false); });
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [tick]);
 
   const ingest = () => {
     setIngesting(true);
@@ -52,15 +54,17 @@ export default function Sources() {
   };
 
   const enabled = sources.filter((s) => s.enabled);
-  const healthy = enabled.filter((s) => s.consecutive_failures === 0);
-  const failing = enabled.length - healthy.length;
-  const allHealthy = failing === 0;
+  const healthy = enabled.filter((s) => s.last_success != null && s.consecutive_failures === 0);
+  const neverRun = enabled.filter((s) => s.last_attempt == null);
+  const failing = enabled.filter((s) => s.consecutive_failures > 0).length;
+  const allHealthy = failing === 0 && neverRun.length === 0;
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
         <StatChip label="Sources enabled" value={enabled.length} color="#e2e8f0" />
         <StatChip label="Healthy" value={healthy.length} color="#4ade80" />
+        <StatChip label="Never run" value={neverRun.length} color="#fbbf24" />
         <StatChip label="Failing" value={failing} color={failing ? '#f87171' : '#64748b'} />
         <StatChip label="Disabled" value={sources.length - enabled.length} color="#64748b" />
         <StatChip label="Total records" value={sources.reduce((n, s) => n + s.records_ingested, 0)} color="#38bdf8" />
@@ -72,7 +76,9 @@ export default function Sources() {
           {ingesting ? 'Ingesting…' : 'Ingest all due'}
         </button>
         <span className={`text-sm font-semibold ${allHealthy ? 'text-emerald-400' : failing <= 2 ? 'text-amber-400' : 'text-red-400'}`}>
-          {allHealthy ? `${healthy.length}/${enabled.length} sources healthy` : `${healthy.length}/${enabled.length} healthy · ${failing} failing`}
+          {allHealthy
+            ? `${healthy.length}/${enabled.length} sources healthy`
+            : `${healthy.length}/${enabled.length} healthy${neverRun.length ? ` · ${neverRun.length} never run` : ''}${failing ? ` · ${failing} failing` : ''}`}
         </span>
         {loading && <span className="text-xs text-slate-400 animate-pulse">loading…</span>}
         {msg && <span className="text-xs text-slate-400">{msg}</span>}

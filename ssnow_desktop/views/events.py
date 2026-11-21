@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html as html_mod
 from datetime import datetime, timedelta, timezone
 
 from PySide6.QtCore import Qt
@@ -68,6 +69,23 @@ def fmt_ts(value) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
+class NumericItem(QTableWidgetItem):
+    """Table item that sorts by a numeric UserRole, not its display text."""
+
+    def __init__(self, text: str, value: float | None) -> None:
+        super().__init__(text)
+        self.setData(Qt.ItemDataRole.UserRole + 1, value)
+
+    def __lt__(self, other) -> bool:  # noqa: ANN001
+        left = self.data(Qt.ItemDataRole.UserRole + 1)
+        right = other.data(Qt.ItemDataRole.UserRole + 1) if isinstance(other, QTableWidgetItem) else None
+        if left is None:
+            return False if right is None else True
+        if right is None:
+            return False
+        return float(left) < float(right)
+
+
 class DetailDialog(QDialog):
     def __init__(self, event, parent=None) -> None:
         super().__init__(parent)
@@ -80,9 +98,11 @@ class DetailDialog(QDialog):
         if event.extra_json:
             import json
 
-            extra = f"<pre>{json.dumps(event.extra_json, indent=2)}</pre>"
+            extra = f"<pre>{html_mod.escape(json.dumps(event.extra_json, indent=2, default=str))}</pre>"
         ex = event.extra_json or {}
         badges: list[str] = []
+        if ex.get("time_estimated"):
+            badges.append("Estimated time — upstream timestamp missing")
         if ex.get("tsunami") in (1, True, "1"):
             badges.append("🌊 TSUNAMI FLAG — check USGS/PTWC")
         if ex.get("alert"):
@@ -105,8 +125,12 @@ class DetailDialog(QDialog):
             badges.append(f"⛈️ Storm report: {ex.get('typetext')} via {ex.get('wfo')} ({ex.get('source')})")
         if ex.get("speed") or ex.get("type"):
             badges.append(f"CME: speed {ex.get('speed')} km/s · type {ex.get('type')} · half-angle {ex.get('half_angle')}")
-        badge_html = f"<p><b>{' · '.join(badges)}</b></p>" if badges else ""
-        instruction = f"<p><b>Instruction:</b> {ex.get('instruction')}</p>" if ex.get("instruction") else ""
+        badge_html = f"<p><b>{html_mod.escape(' · '.join(badges))}</b></p>" if badges else ""
+        instruction = (
+            f"<p><b>Instruction:</b> {html_mod.escape(str(ex.get('instruction')))}</p>"
+            if ex.get("instruction")
+            else ""
+        )
         mag_text = (
             f"{event.magnitude:.1f} {event.magnitude_unit or ''}".strip()
             if event.magnitude is not None
@@ -118,18 +142,19 @@ class DetailDialog(QDialog):
             else "—"
         )
         depth_text = f"{event.depth_km:.1f} km" if event.depth_km is not None else "—"
+        safe_title = html_mod.escape(event.title)
         html = f"""
-        <h2>{event.title}</h2>
-        <p><b>Source:</b> {event.source} &nbsp;|&nbsp; <b>Category:</b> {event.category} &nbsp;|&nbsp; <b>Upstream ID:</b> {event.upstream_id}</p>
+        <h2>{safe_title}</h2>
+        <p><b>Source:</b> {html_mod.escape(event.source)} &nbsp;|&nbsp; <b>Category:</b> {html_mod.escape(event.category)} &nbsp;|&nbsp; <b>Upstream ID:</b> {html_mod.escape(event.upstream_id)}</p>
         <p><b>Occurred:</b> {fmt_ts(event.occurred_at)} &nbsp;|&nbsp; <b>Updated:</b> {fmt_ts(event.updated_at)}</p>
-        <p><b>Magnitude:</b> {mag_text} &nbsp;|&nbsp; <b>Depth:</b> {depth_text} &nbsp;|&nbsp; <b>Lat/Lon:</b> {geo_text}</p>
-        <p><b>Description:</b> {event.description or '—'}</p>
+        <p><b>Magnitude:</b> {html_mod.escape(mag_text)} &nbsp;|&nbsp; <b>Depth:</b> {depth_text} &nbsp;|&nbsp; <b>Lat/Lon:</b> {geo_text}</p>
+        <p><b>Description:</b> {html_mod.escape(event.description or '—')}</p>
         {badge_html}
         {instruction}
         <p><b>Extra:</b> {extra}</p>
         """
-        if event.url:
-            html += f"<p><a href='{event.url}'>Open source page</a></p>"
+        if event.url and event.url.startswith(("http://", "https://")):
+            html += f"<p><a href='{html_mod.escape(event.url, quote=True)}'>Open source page</a></p>"
         browser.setHtml(html)
         browser.setOpenExternalLinks(True)
         layout.addWidget(browser)
@@ -147,7 +172,9 @@ class DetailDialog(QDialog):
         layout.addLayout(buttons)
 
     def _show_on_map(self, event) -> None:
-        mw = self.window()
+        # The dialog itself is a top-level window; its parent is EventsView.
+        parent = self.parent()
+        mw = parent.window() if parent is not None else self.window()
         show = getattr(mw, "show_on_map", None)
         if callable(show):
             show(event.latitude, event.longitude)
@@ -176,6 +203,8 @@ class EventsView(BaseView):
         self.export_btn = QPushButton("Export CSV")
         self.export_btn.setToolTip("Export the currently loaded events to CSV")
         self.export_btn.clicked.connect(self._export_csv)
+        self.count_lbl = QLabel("")
+        self.count_lbl.setObjectName("faint")
         toolbar.addWidget(QLabel("Category:"))
         toolbar.addWidget(self.category_combo)
         toolbar.addWidget(QLabel("Within:"))
@@ -185,6 +214,7 @@ class EventsView(BaseView):
         toolbar.addWidget(self.apply_btn)
         toolbar.addWidget(self.export_btn)
         toolbar.addStretch(1)
+        toolbar.addWidget(self.count_lbl)
         layout.addLayout(toolbar)
 
         self.table = QTableWidget(0, 6)
@@ -196,7 +226,8 @@ class EventsView(BaseView):
         self.table.setEditTriggers(self.table.EditTrigger.NoEditTriggers)
         self.table.doubleClicked.connect(self._on_double_clicked)
         layout.addWidget(self.table)
-        self.refresh()
+        if not getattr(self.store, "defer_initial_refresh", False):
+            self.refresh()
 
     def refresh(self) -> None:
         end = datetime.now(timezone.utc)
@@ -225,7 +256,7 @@ class EventsView(BaseView):
                 if event.magnitude is not None
                 else "—"
             )
-            mag_item = QTableWidgetItem(mag_text)
+            mag_item = NumericItem(mag_text, event.magnitude)
             mag_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             seismic_unit = (event.magnitude_unit or "M") in ("M", "ML", "Mb", "MbLg", "Ms", "Mw", "md", "MLv", "")
             if seismic_unit and event.magnitude is not None and event.magnitude >= 6:
@@ -242,11 +273,14 @@ class EventsView(BaseView):
             self.table.setItem(row, 5, QTableWidgetItem(detail))
             self.table.item(row, 0).setData(Qt.ItemDataRole.UserRole, event)
         self.table.setSortingEnabled(True)
+        suffix = " (limit 500; narrow the filters to see more)" if len(events) >= 500 else ""
+        self.count_lbl.setText(f"{len(events)} events{suffix}")
 
     def _on_double_clicked(self, index) -> None:
         item = self.table.item(index.row(), 0)
         event = item.data(Qt.ItemDataRole.UserRole)
         dlg = DetailDialog(event, self)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dlg.exec()
 
     def _export_csv(self) -> None:

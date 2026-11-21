@@ -66,7 +66,8 @@ class LSRAdapter(HttpAdapter):
             coords = geom.get("coordinates") or []
             lon = _fnum(coords[0]) if len(coords) > 0 else _fnum(props.get("lon"))
             lat = _fnum(coords[1]) if len(coords) > 1 else _fnum(props.get("lat"))
-            occurred_at = _parse_iso_utc(props.get("valid")) or now
+            parsed_time = _parse_iso_utc(props.get("valid"))
+            occurred_at = parsed_time or now
             typetext = props.get("typetext") or props.get("type") or "storm report"
             mag = _fnum(props.get("magf"))
             if mag is None:
@@ -77,6 +78,7 @@ class LSRAdapter(HttpAdapter):
             where = f"{city}, {state}".strip(", ") or props.get("county") or ""
             mag_txt = f" {mag}{(' ' + unit) if unit else ''}" if mag is not None else ""
             extra = {
+                "time_estimated": parsed_time is None,
                 "kind": "lsr",
                 "lsr_type": props.get("type"),
                 "typetext": typetext,

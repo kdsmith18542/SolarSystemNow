@@ -6,7 +6,7 @@
 Linux desktop + local web dashboard for reviewing **current and historical real data** about Earth and its solar neighborhood: earthquakes, tsunamis, volcanoes, storms, wildfires, floods, weather, tides, space weather (Kp, solar wind, IMF Bz, flares, protons, Dst), the Sun (SDO/LASCO imagery), the Moon, and near-Earth asteroids, comets, fireballs and impact risk. No fabricated data, no server required, no hosting costs.
 
 ![Desktop Now view](docs/screenshots/desktop-now.png)
-*Desktop: composite threat dial, Kp/Bz/proton/Dst cards, aurora verdict, quake + CME watch, Kp trend.*
+*Desktop: composite threat dial, Kp card, aurora verdict, quake + CME watch, Kp trend (Bz/proton/Dst live in the Sun view and streamer ribbon).*
 
 ![Web dashboard](docs/screenshots/web-dashboard.png)
 *Web dashboard: same live data — threat hero, solar-wind/aurora metrics, per-location weather, event table with category chips.*
@@ -50,10 +50,12 @@ ssnow sim --list
 ssnow sim --id flare_arrival --param cme_speed_km_s=800
 
 # web dashboard (needs npm run build in ssnow_web/ first)
-ssnow-web --port 8123
+ssnow-web --port 8123   # binds 127.0.0.1 by default
 ```
 
-Environment overrides: `SSNOW_DATA_DIR`, `SSNOW_CONFIG_DIR`, `SSNOW_CACHE_DIR`. Extra flags: `--log-level`.
+Environment overrides: `SSNOW_DATA_DIR`, `SSNOW_CONFIG_DIR`, `SSNOW_CACHE_DIR`, `SSNOW_API_TOKEN`, `SSNOW_CORS_ORIGINS`. Extra flags: `--log-level`.
+
+Frontend checks: `cd ssnow_web && npm run typecheck && npm run build` (CI runs both).
 
 ## Remote server mode (desktop ↔ ssnow-web)
 
@@ -65,14 +67,15 @@ Run `ssnow-web` on a home server/NAS and point the desktop at it:
 
 If the server is unreachable at startup the desktop falls back to standalone with a logged warning. The NASA key never leaves the server; leaving the key field blank keeps the stored one. Backup export is standalone-only.
 
-Set `SSNOW_API_TOKEN` on the server to require a write token for `POST /api/ingest`, `/api/settings` and `/api/sim/run` (header `X-SSNOW-Token` or `Authorization: Bearer …`); paste the same token into the desktop Settings server section. GETs always stay public. In remote mode the desktop also follows the server's SSE live stream, so it refreshes the moment an ingest finishes.
+Set `SSNOW_API_TOKEN` on the server to require a token for `POST /api/ingest`, `/api/settings`, `/api/sim/run` and for reading `/api/settings` (header `X-SSNOW-Token` or `Authorization: Bearer …`); paste the same token into the desktop Settings server section and the web Settings tab. Public upstream GETs stay public. In remote mode the desktop also follows the server's SSE live stream, so it refreshes the moment an ingest finishes.
 
 ## Self-hosting (Docker)
 
 ```bash
-(cd ssnow_web && npm run build)          # bundle into ../static/
 docker compose -f packaging/docker-compose.yml up -d --build
-# http://<host>:8123 — data persists in the ssnow-data volume
+# http://127.0.0.1:8123 — data persists in the ssnow-data volume.
+# The image builds the React bundle from source (multi-stage); no stale static/.
+# For LAN access bind 0.0.0.0 and set SSNOW_API_TOKEN in packaging/docker-compose.yml.
 ```
 
 

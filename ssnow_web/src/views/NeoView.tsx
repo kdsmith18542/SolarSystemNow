@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../services/api';
+import { useRefreshTick } from '../hooks/useRefreshTick';
 
 interface Neo {
   id: string;
@@ -7,6 +8,8 @@ interface Neo {
   kind: string;
   is_comet: boolean;
   hazardous: boolean;
+  hazardous_candidate: boolean;
+  diameter_estimated: boolean;
   approach_at: string | null;
   dist_lunar: number | null;
   dist_km: number | null;
@@ -33,6 +36,7 @@ function fmt(ts: string | null) {
 }
 
 export default function NeoView() {
+  const tick = useRefreshTick();
   const [neos, setNeos] = useState<Neo[]>([]);
   const [stats, setStats] = useState({ count: 0, pha: 0, inside_moon: 0, comets: 0 });
 
@@ -41,7 +45,7 @@ export default function NeoView() {
       setNeos(r.neos);
       setStats({ count: r.count, pha: r.pha, inside_moon: r.inside_moon, comets: r.comets });
     }).catch(() => null);
-  }, []);
+  }, [tick]);
 
   const maxLD = Math.max(5, ...neos.slice(0, 12).map((n) => Math.min(n.dist_lunar ?? 5, 40)));
 
@@ -49,7 +53,7 @@ export default function NeoView() {
     <div className="space-y-4">
       <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-800 text-sm text-slate-300">
         <span className="font-bold text-slate-100">{stats.count} tracked</span>
-        {' · '}<span className="text-red-400">{stats.pha} potentially hazardous</span>
+        {' · '}<span className="text-red-400">{stats.pha} PHA / PHA-candidate</span>
         {' · '}<span className="text-amber-300">{stats.inside_moon} inside Moon orbit</span>
         {' · '}<span className="text-cyan-300">{stats.comets} comets</span>
         <div className="text-xs text-slate-500 mt-1">NASA JPL CNEOS NeoWs + SBDB CAD · 1 LD = 384,400 km · schematic only, not true orbits</div>
@@ -81,7 +85,7 @@ export default function NeoView() {
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="text-slate-500 border-b border-slate-800 bg-slate-900">
-                <th className="px-4 py-3">Name</th><th className="px-4 py-3">Type</th><th className="px-4 py-3">Approach</th>
+                <th className="px-4 py-3">Name</th><th className="px-4 py-3">Type</th><th className="px-4 py-3">Date (UTC)</th>
                 <th className="px-4 py-3 text-right">LD</th><th className="px-4 py-3 text-right">km</th>
                 <th className="px-4 py-3 text-right">Vel</th><th className="px-4 py-3">Size</th><th className="px-4 py-3">Link</th>
               </tr>
@@ -90,12 +94,12 @@ export default function NeoView() {
               {neos.map((n) => (
                 <tr key={n.id} className={n.hazardous ? 'bg-red-950/30' : 'hover:bg-slate-800/50'}>
                   <td className="px-4 py-2 text-slate-200 truncate max-w-xs">{n.name}</td>
-                  <td className="px-4 py-2 text-xs capitalize text-slate-400">{n.kind}{n.hazardous ? ' · PHA' : ''}</td>
+                  <td className="px-4 py-2 text-xs capitalize text-slate-400">{n.kind}{n.kind === 'sentry' ? ' · impact watch' : n.is_comet ? '' : n.hazardous ? ' · PHA' : n.hazardous_candidate ? ' · PHA candidate' : ''}</td>
                   <td className="px-4 py-2 text-slate-300">{fmt(n.approach_at)}</td>
                   <td className="px-4 py-2 text-right text-slate-200">{n.dist_lunar != null ? n.dist_lunar.toFixed(2) : '—'}</td>
                   <td className="px-4 py-2 text-right text-slate-400">{n.dist_km != null ? Math.round(n.dist_km).toLocaleString() : '—'}</td>
                   <td className="px-4 py-2 text-right text-slate-400">{n.velocity_km_s != null ? n.velocity_km_s.toFixed(1) : '—'}</td>
-                  <td className="px-4 py-2 text-xs text-slate-300">{humanSize(n.diameter_km)}</td>
+                  <td className="px-4 py-2 text-xs text-slate-300">{humanSize(n.diameter_km)}{n.diameter_estimated && n.diameter_km != null ? ' (est. from H)' : ''}</td>
                   <td className="px-4 py-2">{n.url ? <a href={n.url} target="_blank" rel="noreferrer" className="text-blue-400 underline text-xs">JPL</a> : '—'}</td>
                 </tr>
               ))}

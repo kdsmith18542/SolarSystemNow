@@ -63,11 +63,16 @@ def seed_if_empty(store) -> int:
     if store.get_setting("seeded_at"):
         return 0
 
+    import inspect
+
+    from .logging_config import get_logger
     from .models import utcnow
     from .sources.registry import SPECS, build_adapter
 
+    logger = get_logger("seed")
     now = utcnow()
     total = 0
+    failures: list[str] = []
     for source_id in SEED_SOURCES:
         try:
             payload = (
@@ -76,7 +81,8 @@ def seed_if_empty(store) -> int:
                 .joinpath(SEED_FILES[source_id])
                 .read_bytes()
             )
-        except (FileNotFoundError, ModuleNotFoundError):
+        except (FileNotFoundError, ModuleNotFoundError) as exc:
+            failures.append(f"{source_id}: {exc}")
             continue
         adapter = build_adapter(source_id)
         spec = SPECS[source_id]
@@ -88,13 +94,31 @@ def seed_if_empty(store) -> int:
                 continue
             store.save_snapshot(source_id, spec.url, payload, "application/json", status_code=200, fetched_at=now)
             # NeoWsAdapter.parse(payload, now) vs HttpAdapter.parse(payload, content_type, now)
-            try:
+            params = inspect.signature(adapter.parse).parameters
+            if "content_type" in params or len(params) >= 3:
                 events, observations = adapter.parse(payload, "application/json", now)
-            except TypeError:
+            else:
                 events, observations = adapter.parse(payload, now)
-            adapter.persist(store, events, observations, now)
+            # Some adapters (NeoWs, SPC, solar cycle) implement ingest() without
+            # inheriting HttpAdapter.persist(); store their parsed rows directly.
+            if hasattr(adapter, "persist"):
+                adapter.persist(store, events, observations, now)
+            else:
+                store.upsert_events(events)
+                store.upsert_observations(observations)
             total += len(events) + len(observations)
-        except Exception:
-            continue
-    store.set_setting("seeded_at", now.isoformat())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("seed %s failed: %s", source_id, exc)
+            failures.append(f"{source_id}: {exc}")
+    if failures:
+        logger.warning(
+            "seeded %d records; %d source(s) skipped/failed: %s",
+            total,
+            len(failures),
+            "; ".join(failures[:5]),
+        )
+    if total > 0:
+        store.set_setting("seeded_at", now.isoformat())
+    else:
+        logger.error("seed produced no records; will retry on next start")
     return total

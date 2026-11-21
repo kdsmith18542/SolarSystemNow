@@ -1,6 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../services/api';
 import type { Event } from '../services/api';
+import { useRefreshTick } from '../hooks/useRefreshTick';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Map, Marker, Popup } from 'maplibre-gl';
 
@@ -14,9 +15,11 @@ const CATEGORY_COLORS: Record<string, string> = {
   storm: '#3b82f6', // IEM local storm reports ride the storm layer
   flood: '#06b6d4', // cyan
   severe_weather: '#eab308', // yellow
+  weather_alert: '#22d3ee', // cyan alerts
   space_weather_alert: '#a855f6', // purple
   cme: '#ec4899', // pink
   geomagnetic_storm: '#8b5cf6', // violet
+  solar_flare: '#f59e0b', // amber
   neo: '#10b981', // emerald
   fireball: '#fb923c', // orange fireball
   severe_outlook: '#eab308', // yellow SPC
@@ -41,8 +44,16 @@ const LAYERS: { id: string; label: string; categories: string[] }[] = [
   { id: 'other', label: 'Other', categories: ['other', 'neo'] },
 ];
 
+function escapeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 export default function MapView() {
+  const tick = useRefreshTick();
   const [mapReady, setMapReady] = useState(false);
+  const [mapError, setMapError] = useState<string | null>(null);
   const [enabled, setEnabled] = useState<Record<string, boolean>>({ quake: true, volcano_fire: true, storm: true, severe: true, fireball: true, space: true, other: false });
   const [radar, setRadar] = useState(false);
   const [auroraOval, setAuroraOval] = useState(true);
@@ -51,6 +62,12 @@ export default function MapView() {
   const mapRef = useRef<Map | null>(null);
   const eventsRef = useRef<Event[]>([]);
   const ovalRef = useRef<{ edge: number | null; north: number[][]; south: number[][] }>({ edge: null, north: [], south: [] });
+  const enabledRef = useRef(enabled);
+  const radarRef = useRef(radar);
+  const auroraRef = useRef(auroraOval);
+  enabledRef.current = enabled;
+  radarRef.current = radar;
+  auroraRef.current = auroraOval;
 
   const drawMarkers = () => {
     const map = mapRef.current;
@@ -72,7 +89,7 @@ export default function MapView() {
     // the grid when available (stored in the obs extra), otherwise a
     // constant-latitude fallback line per hemisphere.
     const oval = ovalRef.current;
-    if (auroraOval && (oval.edge != null || oval.north.length > 1 || oval.south.length > 1) && (map as any).addSource) {
+    if (auroraRef.current && (oval.edge != null || oval.north.length > 1 || oval.south.length > 1) && (map as any).addSource) {
       try {
         const features: any[] = [];
         const line = (coords: number[][], title: string) => ({
@@ -94,10 +111,19 @@ export default function MapView() {
       } catch { /* ignore if style not ready */ }
     }
     const active = new Set<string>();
-    LAYERS.filter((l) => enabled[l.id]).forEach((l) => l.categories.forEach((c) => active.add(c)));
+    LAYERS.filter((l) => enabledRef.current[l.id]).forEach((l) => l.categories.forEach((c) => active.add(c)));
+    const isExpired = (e: Event): boolean => {
+      const ex = (e.extra ?? {}) as any;
+      for (const key of ['expires', 'expire_iso']) {
+        if (!ex[key]) continue;
+        const stamp = Date.parse(ex[key]);
+        if (!Number.isNaN(stamp) && stamp < Date.now()) return true;
+      }
+      return false;
+    };
     // SPC outlook polygons as translucent fills.
     const polys = eventsRef.current.filter(
-      (e) => active.has(e.category) && (e.extra as any)?.geometry && ['Polygon', 'MultiPolygon'].includes((e.extra as any).geometry.type)
+      (e) => active.has(e.category) && !isExpired(e) && (e.extra as any)?.geometry && ['Polygon', 'MultiPolygon'].includes((e.extra as any).geometry.type)
     ).map((e) => ({ type: 'Feature' as const, properties: { title: e.title }, geometry: (e.extra as any).geometry }));
     if (polys.length && (map as any).addSource) {
       try {
@@ -110,7 +136,7 @@ export default function MapView() {
     try {
       if (map.getLayer('radar')) map.removeLayer('radar');
       if (map.getSource('radar')) map.removeSource('radar');
-      if (radar) {
+      if (radarRef.current) {
         (map as any).addSource('radar', { type: 'raster', tiles: RADAR_TILES, tileSize: 256 });
         map.addLayer({ id: 'radar', type: 'raster', source: 'radar', paint: { 'raster-opacity': 0.65 } } as any);
       }
@@ -118,21 +144,45 @@ export default function MapView() {
     eventsRef.current.forEach((e) => {
       if (e.latitude == null || e.longitude == null) return;
       if (!active.has(e.category)) return;
+      if (['weather_alert', 'severe_outlook'].includes(e.category) && isExpired(e)) return;
       const color = CATEGORY_COLORS[e.category] || CATEGORY_COLORS.other;
       const tsunami = (e.extra as any)?.tsunami === 1 || (e.extra as any)?.tsunami === true;
       const extraBadge = tsunami ? '<br/><strong style="color:#dc2626;">🌊 TSUNAMI FLAG</strong>' : '';
       const felt = (e.extra as any)?.felt;
-      const feltTxt = felt ? `<br/>felt: ${felt}` : '';
+      const feltTxt = felt ? `<br/>felt: ${escapeHtml(felt)}` : '';
+      const magTxt = e.magnitude != null ? `${e.magnitude.toFixed(1)} ${escapeHtml(e.magnitude_unit || '')}` : '';
       const marker = new Marker({ color })
         .setLngLat([e.longitude, e.latitude])
         .setPopup(
           new Popup({ offset: 25 }).setHTML(
-            `<div style="color:#111;"><strong>${e.title || 'Event'}</strong><br/><em>${e.category}</em> · ${e.occurred_at || ''}<br/>${e.magnitude != null ? e.magnitude.toFixed(1) + ' ' + (e.magnitude_unit || '') : ''}${extraBadge}${feltTxt}</div>`
+            `<div style="color:#111;"><strong>${escapeHtml(e.title || 'Event')}</strong><br/>` +
+            `<em>${escapeHtml(e.category)}</em> · ${escapeHtml(e.occurred_at || '')}<br/>` +
+            `${magTxt}${extraBadge}${feltTxt}<br/><em>Source: ${escapeHtml(e.source)}</em></div>`
           )
         )
         .addTo(map);
       markersRef.current.push(marker);
     });
+  };
+
+  const loadMapData = () => {
+    const end = new Date().toISOString();
+    const start = new Date(Date.now() - 30 * 86400000).toISOString();
+    api.events({ start, end, limit: 500 }).then(({ events: evs }) => {
+      eventsRef.current = evs;
+      drawMarkers();
+    }).catch(() => null);
+    api.obs('aurora', 'aurora:oval_equatorward_deg', 1).then((r) => {
+      if (r.points[0]) {
+        const extra = (r.points[0].extra ?? {}) as any;
+        ovalRef.current = {
+          edge: r.points[0].value,
+          north: Array.isArray(extra.boundary_north) ? extra.boundary_north : [],
+          south: Array.isArray(extra.boundary_south) ? extra.boundary_south : [],
+        };
+        drawMarkers();
+      }
+    }).catch(() => null);
   };
 
   useEffect(() => {
@@ -144,25 +194,19 @@ export default function MapView() {
       zoom: 1.1,
     });
     mapRef.current = map;
+    const loadTimer = window.setTimeout(() => {
+      if (!mapRef.current?.loaded()) {
+        setMapError('Map style/tiles unavailable (offline or blocked CDN). Event data still works below.');
+      }
+    }, 12000);
     map.on('load', () => {
+      window.clearTimeout(loadTimer);
       setMapReady(true);
-      api.events({ limit: 500 }).then(({ events: evs }) => {
-        eventsRef.current = evs;
-        drawMarkers();
-      });
-      api.obs('aurora', 'aurora:oval_equatorward_deg', 1).then((r) => {
-        if (r.points[0]) {
-          const extra = (r.points[0].extra ?? {}) as any;
-          ovalRef.current = {
-            edge: r.points[0].value,
-            north: Array.isArray(extra.boundary_north) ? extra.boundary_north : [],
-            south: Array.isArray(extra.boundary_south) ? extra.boundary_south : [],
-          };
-          drawMarkers();
-        }
-      }).catch(() => null);
+      setMapError(null);
+      loadMapData();
     });
     return () => {
+      window.clearTimeout(loadTimer);
       markersRef.current.forEach((m) => m.remove());
       markersRef.current = [];
       map.remove();
@@ -175,6 +219,11 @@ export default function MapView() {
     drawMarkers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, radar, auroraOval]);
+
+  useEffect(() => {
+    if (mapReady) loadMapData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tick]);
 
   return (
     <div className="flex-1 bg-slate-900 relative">
@@ -203,8 +252,8 @@ export default function MapView() {
         <div className="text-[10px] text-slate-500 pt-1">NEOs are space objects — see Asteroids tab.</div>
       </div>
       {!mapReady && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500">
-          Loading map…
+        <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 px-8 text-center">
+          {mapError ?? 'Loading map…'}
         </div>
       )}
     </div>

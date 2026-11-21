@@ -158,15 +158,15 @@ export const api = {
   moon: () => json<MoonState>("/moon/state"),
   ingest: () => json<{ timestamp: string; sources: any[] }>("/ingest", { method: "POST", headers: writeHeaders() }),
   settings: {
-    get: () => json<Settings>("/settings"),
-    set: (body: Partial<Settings> & { nasa_api_key?: string }) => json<{ ok: boolean }>("/settings", { method: "POST", headers: { "Content-Type": "application/json", ...writeHeaders() }, body: JSON.stringify(body) }),
+    get: () => json<Settings>("/settings", { headers: writeHeaders() }),
+    set: (body: Omit<Partial<Settings>, "nasa_api_key"> & { nasa_api_key?: string }) => json<{ ok: boolean }>("/settings", { method: "POST", headers: { "Content-Type": "application/json", ...writeHeaders() }, body: JSON.stringify(body) }),
   },
   simScenarios: () => json<{ scenarios: SimScenario[] }>("/sim/scenarios"),
   simRun: (body: { id: string; params: Record<string, any> }) =>
     json<any>("/sim/run", { method: "POST", headers: { "Content-Type": "application/json", ...writeHeaders() }, body: JSON.stringify(body) }),
   sunSummary: () => json<SunSummary>("/sun/summary"),
-  obs: (source: string, series: string, limit?: number) =>
-    json<{ source: string; series: string; unit: string | null; count: number; points: Array<{ ts: string; value: number; extra: any }> }>(`/obs?source=${encodeURIComponent(source)}&series=${encodeURIComponent(series)}&limit=${limit ?? 120}`),
+  obs: (source: string, series: string, limit?: number, order: "asc" | "desc" = "desc") =>
+    json<{ source: string; series: string; unit: string | null; count: number; points: Array<{ ts: string; value: number; extra: any }> }>(`/obs?source=${encodeURIComponent(source)}&series=${encodeURIComponent(series)}&limit=${limit ?? 120}&order=${order}`),
   weatherNow: () =>
     json<{ count: number; locations: Array<{
       name: string; lat: number | null; lon: number | null;
@@ -179,7 +179,7 @@ export const api = {
       sst_c: { value: number; unit: string | null; ts: string } | null;
     }> }>('/weather/now'),
   neos: (limit?: number) =>
-    json<{ count: number; pha: number; inside_moon: number; comets: number; neos: Array<{ id: string; name: string; kind: string; is_comet: boolean; hazardous: boolean; approach_at: string | null; dist_lunar: number | null; dist_km: number | null; velocity_km_s: number | null; h: number | null; diameter_km: number | null; url: string | null; source: string }> }>(`/neos?limit=${limit ?? 200}`),
+    json<{ count: number; pha: number; inside_moon: number; comets: number; neos: Array<{ id: string; name: string; kind: string; is_comet: boolean; hazardous: boolean; hazardous_candidate: boolean; diameter_estimated: boolean; approach_at: string | null; dist_lunar: number | null; dist_km: number | null; velocity_km_s: number | null; h: number | null; diameter_km: number | null; url: string | null; source: string }> }>(`/neos?limit=${limit ?? 200}`),
   spcOutlooks: (limit?: number) =>
     json<{ count: number; outlooks: Event[] }>(`/spc/outlooks?limit=${limit ?? 50}`),
   fireballs: (limit?: number) =>

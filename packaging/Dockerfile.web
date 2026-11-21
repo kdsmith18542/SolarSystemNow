@@ -1,5 +1,16 @@
-# ssnow-web self-hosting image (FastAPI + built React bundle in ../static/).
-# Build the web bundle first: (cd ssnow_web && npm run build)
+# ssnow-web self-hosting image (FastAPI + freshly built React bundle).
+# Multi-stage: the frontend is built from source in the image, so a stale
+# committed static/ bundle can never ship.
+
+FROM node:20-slim AS webbuild
+WORKDIR /web
+COPY ssnow_web/package.json ssnow_web/package-lock.json ./
+RUN npm ci
+COPY ssnow_web/index.html ssnow_web/vite.config.ts ssnow_web/tsconfig.json ssnow_web/postcss.config.js ./
+COPY ssnow_web/src ./src
+COPY ssnow_web/public ./public
+RUN npm run build
+
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -11,11 +22,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY ssnow_core ./ssnow_core
-COPY ssnow_web ./ssnow_web
-COPY static ./static
+COPY ssnow_web/__init__.py ssnow_web/api.py ssnow_web/server.py ./ssnow_web/
+COPY --from=webbuild /static ./static
 RUN pip install --no-cache-dir ".[web]" && \
-    python -c "import ssnow_web.api, ssnow_core.seed; print('import ok')"
+    python -c "import ssnow_web.api, ssnow_core.seed; print('import ok')" && \
+    useradd --system --uid 10001 ssnow && \
+    mkdir -p /data && chown -R ssnow:ssnow /data /app
 
+USER ssnow
 EXPOSE 8123
 VOLUME ["/data"]
+# Bind explicitly to all interfaces only inside the container; the host
+# should publish 127.0.0.1:8123 or set SSNOW_API_TOKEN for LAN exposure.
 CMD ["python", "-m", "ssnow_web.server", "--port", "8123", "--host", "0.0.0.0"]

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import httpx
 
 from .logging_config import get_logger
+from .sources.base import FetchResult
 from .sources.registry import build_adapter, spec_for
 from .store import Store
 
@@ -37,7 +38,15 @@ def run_due(store: Store, client: httpx.Client | None = None, now: datetime | No
             if spec is None or not spec.enabled:
                 continue
             adapter = build_adapter(source_id)
-            report = adapter.ingest(store, client, now)
+            if adapter is None:
+                report = FetchResult(source_id, None, "", "", [], [], error="no adapter")
+            else:
+                try:
+                    report = adapter.ingest(store, client, now)
+                except Exception as exc:  # noqa: BLE001 - one source must not stop the cycle
+                    logger.exception("Unhandled failure in %s", source_id)
+                    store.record_failure(source_id, now, str(exc), spec.cadence_seconds)
+                    report = FetchResult(source_id, None, spec.url, "", [], [], error=str(exc))
             reports.append(report)
             if report.ok:
                 logger.info("Source %s completed ok (%d events, %d obs)", source_id, len(report.events), len(report.observations))

@@ -27,6 +27,8 @@ export default defineConfig({
       SSNOW_DATA_DIR: process.env.SSNOW_E2E_DATA_DIR ?? '/tmp/ssnow-e2e-data',
       SSNOW_CONFIG_DIR: process.env.SSNOW_E2E_CONFIG_DIR ?? '/tmp/ssnow-e2e-config',
       SSNOW_CACHE_DIR: process.env.SSNOW_E2E_CACHE_DIR ?? '/tmp/ssnow-e2e-cache',
+      // Exercise the browser write-token flow; public upstream GETs stay open.
+      SSNOW_API_TOKEN: process.env.SSNOW_E2E_TOKEN ?? 'e2e-token',
     },
   },
 });

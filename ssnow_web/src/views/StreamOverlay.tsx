@@ -52,14 +52,25 @@ export default function StreamOverlay() {
   }, []);
 
   useEffect(() => {
+    if (!transparent) return;
+    const previous = document.body.style.background;
+    document.body.style.background = 'transparent';
+    return () => { document.body.style.background = previous; };
+  }, [transparent]);
+
+  useEffect(() => {
     const load = () => {
       api.sunSummary().then(setSummary).catch(() => null);
       api.kp(90).then((r) => setKpSeries(r.points.map((p) => p.value))).catch(() => null);
-      api.events({ categories: 'earthquake', limit: 1 }).then((r) => setQuake(r.events[0] ?? null)).catch(() => null);
-      api.neos(50).then((r) => {
-        const withDist = r.neos.filter((n) => n.dist_lunar != null);
-        withDist.sort((a, b) => (a.dist_lunar as number) - (b.dist_lunar as number));
-        setNeo(withDist[0] ?? null);
+      api.events({ categories: 'earthquake', limit: 1, end: new Date().toISOString() }).then((r) => setQuake(r.events[0] ?? null)).catch(() => null);
+      api.neos(200).then((r) => {
+        const now = Date.now();
+        const upcoming = r.neos.filter((n) =>
+          n.dist_lunar != null && n.approach_at != null && n.kind !== 'sentry' &&
+          new Date(n.approach_at).getTime() >= now
+        );
+        upcoming.sort((a, b) => new Date(a.approach_at as string).getTime() - new Date(b.approach_at as string).getTime());
+        setNeo(upcoming[0] ?? null);
       }).catch(() => null);
       api.cmeWatch().then(setCme).catch(() => null);
     };
@@ -68,28 +79,28 @@ export default function StreamOverlay() {
     return () => clearInterval(t);
   }, []);
 
-  const kp = summary?.kp?.value ?? 0;
-  const bz = summary?.bz_gsm?.value ?? 0;
-  const proton = summary?.proton_gte10?.value ?? 0;
-  const dst = summary?.dst?.value ?? 0;
-  const xrayClass = summary?.xray?.class ?? '—';
-  const sScale = proton >= 10000 ? 'S4' : proton >= 1000 ? 'S3' : proton >= 100 ? 'S2' : proton >= 10 ? 'S1' : '—';
+  const kp = summary?.kp?.value ?? null;
+  const bz = summary?.bz_gsm?.value ?? null;
+  const proton = summary?.proton_gte10?.value ?? null;
+  const dst = summary?.dst?.value ?? null;
+  const xrayClass = summary?.xray?.class ?? null;
+  const sScale = proton == null ? '—' : proton >= 100000 ? 'S5' : proton >= 10000 ? 'S4' : proton >= 1000 ? 'S3' : proton >= 100 ? 'S2' : proton >= 10 ? 'S1' : '—';
 
-  const threatLevel = (kp >= 7 || proton >= 1000 || dst <= -100 || String(xrayClass).startsWith('X'))
-    ? 3
-    : (kp >= 5 || bz <= -10 || proton >= 10 || String(xrayClass).startsWith('M'))
-      ? 2
-      : (kp >= 4 || bz < 0)
-        ? 1
-        : 0;
+  let threatLevel: number | null = null;
+  const bump = (n: number) => { threatLevel = Math.max(threatLevel ?? 0, n); };
+  if (xrayClass) { bump(xrayClass.startsWith('X') ? 3 : xrayClass.startsWith('M') ? 2 : xrayClass.startsWith('C') ? 1 : 0); }
+  if (kp != null) bump(kp >= 7 ? 3 : kp >= 5 ? 2 : kp >= 4 ? 1 : 0);
+  if (bz != null) bump(bz <= -10 ? 2 : bz < 0 ? 1 : 0);
+  if (proton != null) bump(proton >= 1000 ? 3 : proton >= 10 ? 2 : 0);
+  if (dst != null && dst <= -100) bump(3);
   const threats = ['QUIET', 'UNSETTLED', 'ELEVATED', 'STORM'];
   const threatColors = [C.ok, C.warn, C.hot, C.danger];
 
   const metrics: Metric[] = [
-    { label: 'Kp', value: kp.toFixed(1), color: kp >= 6 ? C.danger : kp >= 4 ? C.warn : C.ok, sub: 'planetary' },
-    { label: 'Bz GSM', value: `${bz.toFixed(1)} nT`, color: bz <= -10 ? C.danger : bz < 0 ? C.warn : C.dim, sub: 'southward = coupling' },
-    { label: 'Protons', value: sScale, color: proton >= 1000 ? C.danger : proton >= 10 ? C.warn : C.dim, sub: `${proton.toFixed(1)} pfu` },
-    { label: 'Dst', value: `${dst.toFixed(0)} nT`, color: dst <= -100 ? C.danger : dst <= -50 ? C.warn : C.dim, sub: 'storm index' },
+    { label: 'Kp', value: kp != null ? kp.toFixed(1) : '—', color: kp == null ? C.faint : kp >= 6 ? C.danger : kp >= 4 ? C.warn : C.ok, sub: 'planetary' },
+    { label: 'Bz GSM', value: bz != null ? `${bz.toFixed(1)} nT` : '—', color: bz == null ? C.faint : bz <= -10 ? C.danger : bz < 0 ? C.warn : C.dim, sub: 'southward = coupling' },
+    { label: 'Protons', value: sScale, color: proton == null ? C.faint : proton >= 1000 ? C.danger : proton >= 10 ? C.warn : C.dim, sub: proton != null ? `${proton.toFixed(1)} pfu` : '≥10 MeV' },
+    { label: 'Dst', value: dst != null ? `${dst.toFixed(0)} nT` : '—', color: dst == null ? C.faint : dst <= -100 ? C.danger : dst <= -50 ? C.warn : C.dim, sub: 'storm index' },
   ];
 
   // Sparkline geometry for the Kp trend.
@@ -123,13 +134,19 @@ export default function StreamOverlay() {
       <div className={`grid grid-cols-12 gap-5 ${compact ? 'mt-3' : 'mt-6'}`}>
         <div className={`col-span-4 rounded-2xl border border-slate-800 ${panel} p-6 flex flex-col justify-center`}>
           <div className="text-[11px] uppercase tracking-[0.2em] text-slate-500 mb-1">Composite threat</div>
-          <div className="text-6xl font-black" style={{ color: threatColors[threatLevel] }}>{threats[threatLevel]}</div>
+          <div className="text-6xl font-black" style={{ color: threatLevel == null ? C.faint : threatColors[threatLevel] }}>
+            {threatLevel == null ? 'NO DATA' : threats[threatLevel]}
+          </div>
           <div className="text-sm text-slate-400 mt-2">
-            Flare {xrayClass}-class · Kp {kp.toFixed(1)} · Bz {bz.toFixed(1)} nT
+            {[
+              xrayClass ? `Flare ${xrayClass}` : null,
+              kp != null ? `Kp ${kp.toFixed(1)}` : null,
+              bz != null ? `Bz ${bz.toFixed(1)} nT` : null,
+            ].filter(Boolean).join(' · ') || 'No space-weather observations yet'}
           </div>
           <div className="flex gap-1.5 mt-4">
             {threatColors.map((c, i) => (
-              <div key={i} className="h-1.5 flex-1 rounded" style={{ background: i <= threatLevel ? c : '#1e293b' }} />
+              <div key={i} className="h-1.5 flex-1 rounded" style={{ background: threatLevel != null && i <= threatLevel ? c : '#1e293b' }} />
             ))}
           </div>
         </div>
@@ -165,7 +182,10 @@ export default function StreamOverlay() {
                 {neo.dist_lunar?.toFixed(2)} LD
               </div>
               <div className="text-sm text-slate-400 truncate">{neo.name} · {neo.kind}</div>
-              <div className="text-[11px] text-slate-500">{neo.hazardous ? 'POTENTIALLY HAZARDOUS' : 'nominal'}</div>
+              <div className="text-[11px] text-slate-500">
+                {neo.approach_at ? `${new Date(neo.approach_at).toISOString().slice(0, 10)} · ` : ''}
+                {neo.hazardous ? 'POTENTIALLY HAZARDOUS' : 'nominal'}
+              </div>
             </>
           ) : <div className="text-slate-600 text-sm">no close approaches</div>}
         </div>
@@ -211,7 +231,7 @@ export default function StreamOverlay() {
         </div>
         <div className={`rounded-2xl border border-slate-800 ${panel} p-5`}>
           <div className="text-[11px] uppercase tracking-[0.2em] text-slate-500 mb-1">Aurora (OVATION)</div>
-          <div className="text-3xl font-extrabold" style={{ color: (summary?.aurora_max?.value ?? 0) >= 30 ? C.ok : C.dim }}>
+          <div className="text-3xl font-extrabold" style={{ color: summary?.aurora_max && summary.aurora_max.value >= 30 ? C.ok : C.dim }}>
             {summary?.aurora_max ? summary.aurora_max.value.toFixed(0) : '—'}
           </div>
           <div className="text-xs text-slate-400">{summary?.aurora_oval ? `oval edge ≥ ${summary.aurora_oval.value.toFixed(0)}°` : 'hemispheric max'}</div>

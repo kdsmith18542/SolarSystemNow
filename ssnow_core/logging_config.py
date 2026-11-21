@@ -3,7 +3,12 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import time
 from pathlib import Path
+
+
+class _UtcFormatter(logging.Formatter):
+    converter = time.gmtime
 
 
 def setup_logging(log_dir: Path | None = None, level: str = "INFO") -> None:
@@ -14,7 +19,7 @@ def setup_logging(log_dir: Path | None = None, level: str = "INFO") -> None:
     if root.handlers:
         return  # Already configured
 
-    fmt = logging.Formatter(
+    fmt = _UtcFormatter(
         "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%SZ",
     )

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import httpx
 
 from .base import FetchResult, HttpAdapter
+from .geo import geometry_centroid
 from ..models import Event
 
 CATEGORY_MAP = {
@@ -39,10 +40,10 @@ class EONETAdapter(HttpAdapter):
         for item in events_data:
             geometries = item.get("geometry") or []
             latest = geometries[-1] if geometries else {}
-            coords = latest.get("coordinates") or []
-            occurred_at = parse_event_time(latest.get("date")) if geometries else None
-            if occurred_at is None:
-                occurred_at = now
+            lat, lon = geometry_centroid(latest)
+            parsed_time = parse_event_time(latest.get("date")) if geometries else None
+            time_estimated = parsed_time is None
+            occurred_at = parsed_time or now
             categories = item.get("categories", []) or []
             category = CATEGORY_MAP.get(categories[0].get("id"), "other") if categories else "other"
             extra = {
@@ -51,6 +52,7 @@ class EONETAdapter(HttpAdapter):
                 "magnitude": latest.get("magnitudeValue"),
                 "magnitude_unit": latest.get("magnitudeUnit"),
                 "geometry_type": latest.get("type"),
+                "time_estimated": time_estimated,
             }
             events.append(
                 Event(
@@ -62,8 +64,8 @@ class EONETAdapter(HttpAdapter):
                     description=item.get("description"),
                     occurred_at=occurred_at,
                     updated_at=None,
-                    latitude=float(coords[1]) if len(coords) > 1 else None,
-                    longitude=float(coords[0]) if len(coords) > 0 else None,
+                    latitude=lat,
+                    longitude=lon,
                     depth_km=None,
                     magnitude=(
                         float(latest.get("magnitudeValue")) if latest.get("magnitudeValue") is not None else None

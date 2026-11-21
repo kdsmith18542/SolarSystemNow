@@ -143,11 +143,25 @@ class SettingsView(BaseView):
 
         layout.addLayout(form)
         layout.addStretch(1)
-        self.refresh()
+        self._fields_loaded = False
+        if not getattr(self.store, "defer_initial_refresh", False):
+            self.refresh()
+
+    def _write_setting(self, key: str, value) -> bool:
+        try:
+            self.store.set_setting(key, value)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(
+                self,
+                "Settings save failed",
+                f"Could not save '{key}'.\n\n{exc}",
+            )
+            return False
 
     def refresh(self) -> None:
         self.loc_list.clear()
-        locations = self.store.get_setting("locations") or []
+        locations = [loc for loc in (self.store.get_setting("locations") or []) if isinstance(loc, dict)]
         for loc in locations:
             item_text = f"{loc.get('name', 'Location')} ({loc.get('lat')}, {loc.get('lon')})"
             item = QListWidgetItem(item_text)
@@ -155,15 +169,18 @@ class SettingsView(BaseView):
             self.loc_list.addItem(item)
 
         self.tide_list.clear()
-        tide_stations = self.store.get_setting("tide_stations") or []
+        tide_stations = [s for s in (self.store.get_setting("tide_stations") or []) if isinstance(s, dict)]
         for station in tide_stations:
             item_text = f"{station.get('name', station.get('id'))} (ID: {station.get('id')})"
             item = QListWidgetItem(item_text)
             item.setData(100, station.get("id"))
             self.tide_list.addItem(item)
 
-        self.nasa_key.setText(self.store.get_setting("nasa_api_key") or "")
-        self.retention.setValue(self.store.get_setting("retention_days", 90))
+        # Don't clobber fields the user is editing on every ingest refresh.
+        if not self._fields_loaded:
+            self.nasa_key.setText(self.store.get_setting("nasa_api_key") or "")
+            self.retention.setValue(int(self.store.get_setting("retention_days", 90) or 90))
+            self._fields_loaded = True
         self.db_path_lbl.setText(str(getattr(self.store, "db_path", "—")))
 
     def _add_location(self) -> None:
@@ -174,11 +191,15 @@ class SettingsView(BaseView):
         except ValueError:
             QMessageBox.warning(self, "Invalid input", "Enter numeric latitude and longitude.")
             return
-        locations = self.store.get_setting("locations") or []
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            QMessageBox.warning(self, "Invalid input", "Latitude must be -90..90 and longitude -180..180.")
+            return
+        locations = [l for l in (self.store.get_setting("locations") or []) if isinstance(l, dict)]
         key = f"{lat:.4f},{lon:.4f}"
         locations = [l for l in locations if l.get("key") != key]
         locations.insert(0, {"name": name or key, "lat": lat, "lon": lon, "key": key})
-        self.store.set_setting("locations", locations)
+        if not self._write_setting("locations", locations):
+            return
         self.loc_name.clear()
         self.loc_lat.clear()
         self.loc_lon.clear()
@@ -189,9 +210,10 @@ class SettingsView(BaseView):
         if not selected:
             return
         key = selected.data(100)
-        locations = self.store.get_setting("locations") or []
+        locations = [l for l in (self.store.get_setting("locations") or []) if isinstance(l, dict)]
         locations = [l for l in locations if l.get("key") != key]
-        self.store.set_setting("locations", locations)
+        if not self._write_setting("locations", locations):
+            return
         self.refresh()
 
     def _add_tide_station(self) -> None:
@@ -200,10 +222,11 @@ class SettingsView(BaseView):
         if not station_id:
             QMessageBox.warning(self, "Invalid input", "Enter a NOAA tide station ID.")
             return
-        stations = self.store.get_setting("tide_stations") or []
+        stations = [s for s in (self.store.get_setting("tide_stations") or []) if isinstance(s, dict)]
         stations = [s for s in stations if s.get("id") != station_id]
         stations.insert(0, {"id": station_id, "name": name})
-        self.store.set_setting("tide_stations", stations)
+        if not self._write_setting("tide_stations", stations):
+            return
         self.tide_id.clear()
         self.tide_name.clear()
         self.refresh()
@@ -213,15 +236,17 @@ class SettingsView(BaseView):
         if not selected:
             return
         station_id = selected.data(100)
-        stations = self.store.get_setting("tide_stations") or []
+        stations = [s for s in (self.store.get_setting("tide_stations") or []) if isinstance(s, dict)]
         stations = [s for s in stations if s.get("id") != station_id]
-        self.store.set_setting("tide_stations", stations)
+        if not self._write_setting("tide_stations", stations):
+            return
         self.refresh()
 
     def _save(self) -> None:
+        token = self.remote_token.text().strip()
         self._qsettings.setValue("remote_mode", bool(self.remote_check.isChecked()))
         self._qsettings.setValue("remote_base_url", self.remote_url.text().strip() or "http://localhost:8123")
-        self._qsettings.setValue("remote_token", self.remote_token.text().strip())
+        self._qsettings.setValue("remote_token", token)
         self._qsettings.setValue("alerts_enabled", bool(self.alerts_master.isChecked()))
         self._qsettings.setValue("alerts_spacewx", bool(self.alerts_spacewx.isChecked()))
         self._qsettings.setValue("alerts_quakes", bool(self.alerts_quakes.isChecked()))
@@ -230,8 +255,13 @@ class SettingsView(BaseView):
         # In remote mode the server never reveals the key: a blank field
         # means "keep", so only POST when the user typed something.
         if key_text or not getattr(self.store, "is_remote", False):
-            self.store.set_setting("nasa_api_key", key_text or None)
-        self.store.set_setting("retention_days", self.retention.value())
+            if not self._write_setting("nasa_api_key", key_text or None):
+                return
+        if not self._write_setting("retention_days", self.retention.value()):
+            return
+        # Apply a corrected token immediately (base URL still needs a restart).
+        if getattr(self.store, "is_remote", False):
+            self.store.token = token or None
         QMessageBox.information(self, "Settings", "Settings saved. Restart to apply a server-connection change.")
 
     def _export(self) -> None:

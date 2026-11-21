@@ -17,10 +17,12 @@ Writes other than the four settings keys are not supported and raise
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
+import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -59,20 +61,178 @@ class RemoteStore:
         self._asset_ts: dict[str, float] = {}
         self._notifs: dict[str, dict[str, Any]] = {}
         self._delivered: set[str] = set()
+        # Read-through cache: periodic prefetch runs on a worker thread so
+        # view refreshes are cache hits instead of UI-thread HTTP stalls.
+        self.cache_ttl = 300.0
+        self._cache: dict[tuple[str, str], tuple[float, Any]] = {}
+        self._cache_lock = threading.RLock()
 
     # -- internal ---------------------------------------------------------
 
-    def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+    def _auth_headers(self) -> dict[str, str] | None:
+        return {"X-SSNOW-Token": self.token} if self.token else None
+
+    @staticmethod
+    def _cache_key(path: str, params: dict[str, Any] | None) -> tuple[str, str]:
+        if not params:
+            return path, ""
+
+        def _normalize(key: str, value: Any) -> Any:
+            # Round time windows to 5-minute buckets so a prefetch and the
+            # following view refresh share a key despite second-level drift.
+            if key in ("start", "end") and isinstance(value, str):
+                try:
+                    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                    return f"bucket:{int(dt.timestamp() // 300)}"
+                except ValueError:
+                    return value
+            return value
+
+        normalized = {key: _normalize(key, value) for key, value in params.items()}
+        return path, json.dumps(normalized, sort_keys=True, default=str)
+
+    def invalidate_cache(self) -> None:
+        with self._cache_lock:
+            self._cache.clear()
+
+    def _get(self, path: str, params: dict[str, Any] | None = None, *, use_cache: bool = True) -> Any:
+        key = self._cache_key(path, params)
+        if use_cache and self.cache_ttl > 0:
+            with self._cache_lock:
+                entry = self._cache.get(key)
+            if entry is not None and time.time() - entry[0] <= self.cache_ttl:
+                return entry[1]
         try:
-            resp = self._client.get(path, params=params, timeout=self.timeout)
+            resp = self._client.get(
+                path, params=params, headers=self._auth_headers(), timeout=self.timeout
+            )
             resp.raise_for_status()
-            return resp.json()
+            data = resp.json()
         except Exception as exc:  # noqa: BLE001
             logger.warning("Remote GET %s failed: %s", path, exc)
             raise
+        with self._cache_lock:
+            self._cache[key] = (time.time(), data)
+        return data
+
+    def prefetch(self) -> dict[str, int]:
+        """Warm the read cache off the UI thread (called by a QThread).
+
+        Failures are isolated per endpoint: stale cache entries stay usable.
+        """
+        calls: list[tuple[str, dict[str, Any] | None]] = []
+
+        def add(path: str, params: dict[str, Any] | None = None) -> None:
+            calls.append((path, params))
+
+        now = datetime.now(timezone.utc)
+        add("/api/settings")
+        add("/api/moon/state")
+        add("/api/sources")
+        add("/api/stats")
+        add("/api/sun/summary")
+        add("/api/sun/images")
+        add("/api/sun/kp", {"limit": 120})
+        add("/api/sun/kp", {"limit": 200})
+        add("/api/neos", {"limit": 200})
+        add("/api/weather/now")
+        add("/api/spc/outlooks", {"limit": 50})
+        add("/api/fireballs", {"limit": 100})
+        add("/api/sim/cme-watch")
+
+        # Events used by Now / Events / Map / alerts.
+        add("/api/events", {"limit": 1, "categories": "earthquake"})
+        add("/api/events", {"limit": 20, "categories": "cme"})
+        add("/api/events", {"limit": 500, "categories": "neo"})
+        add(
+            "/api/events",
+            {
+                "limit": 20,
+                "categories": "earthquake",
+                "min_magnitude": 6.0,
+                "start": (now - timedelta(hours=6)).isoformat(),
+            },
+        )
+        for days in (7, 30):
+            add(
+                "/api/events",
+                {
+                    "limit": 500,
+                    "start": (now - timedelta(days=days)).isoformat(),
+                    "end": now.isoformat(),
+                },
+            )
+
+        # Exact latest series used by Now / Sun / streamer banner / alerts.
+        for series in (
+            "swpc:kp",
+            "swpc:xray_flux",
+            "swpc:f107",
+            "swpc:solarwind_speed",
+            "swpc:solarwind_density",
+            "swpc:imf_bz_gsm",
+            "swpc:imf_bt",
+            "swpc:proton_flux_gte10MeV",
+            "swpc:proton_flux_gte50MeV",
+            "swpc:proton_flux_gte100MeV",
+            "swpc:dst",
+            "swpc:ssn_observed",
+            "swpc:ssn_predicted",
+        ):
+            add("/api/obs", {"source": "swpc", "series": series, "limit": 1, "order": "desc"})
+        for limit in (8, 24):
+            add("/api/obs", {"source": "swpc", "series": "swpc:kp_forecast", "limit": limit, "order": "desc"})
+        for series in ("aurora:intensity_max", "aurora:oval_equatorward_deg"):
+            add("/api/obs", {"source": "aurora", "series": series, "limit": 1, "order": "desc"})
+
+        try:
+            locations = [loc for loc in (self.get_setting("locations") or []) if isinstance(loc, dict)]
+        except Exception:  # noqa: BLE001
+            locations = []
+        if locations:
+            key = locations[0].get("key") or f"{locations[0].get('lat')},{locations[0].get('lon')}"
+            for series in (
+                f"weather:{key}:temperature_2m",
+                f"weather:{key}:wind_speed_10m",
+                f"weather:{key}:precipitation_probability",
+                f"air:{key}:us_aqi",
+                f"air:{key}:pm2_5",
+                f"marine:{key}:wave_height",
+                f"marine:{key}:sea_surface_temperature",
+            ):
+                source = "openmeteo"
+                add("/api/obs", {"source": source, "series": series, "limit": 1, "order": "desc"})
+            add(
+                "/api/obs",
+                {"source": "geomag", "series": f"geomag:{key}:declination", "limit": 1, "order": "desc"},
+            )
+        try:
+            stations = [s for s in (self.get_setting("tide_stations") or []) if isinstance(s, dict)]
+        except Exception:  # noqa: BLE001
+            stations = []
+        if stations:
+            add(
+                "/api/obs",
+                {"source": "tides", "series": f"tides:{stations[0].get('id')}:height", "limit": 1, "order": "desc"},
+            )
+
+        seen: set[tuple[str, str]] = set()
+        ok = failed = 0
+        for path, params in calls:
+            key = self._cache_key(path, params)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                self._get(path, params, use_cache=False)
+                ok += 1
+            except Exception:  # noqa: BLE001
+                failed += 1
+        logger.info("Remote prefetch: %d ok, %d failed", ok, failed)
+        return {"ok": ok, "failed": failed}
 
     def _post(self, path: str, payload: dict[str, Any]) -> Any:
-        headers = {"X-SSNOW-Token": self.token} if self.token else None
+        headers = self._auth_headers()
         try:
             resp = self._client.post(path, json=payload, headers=headers, timeout=self.timeout)
             resp.raise_for_status()
@@ -90,6 +250,7 @@ class RemoteStore:
         categories: list[str] | None = None,
         min_magnitude: float | None = None,
         limit: int = 500,
+        bbox: tuple[float, float, float, float] | None = None,
     ) -> list[Event]:
         params: dict[str, Any] = {"limit": limit}
         if start is not None:
@@ -100,6 +261,16 @@ class RemoteStore:
             params["categories"] = ",".join(categories)
         if min_magnitude is not None:
             params["min_magnitude"] = min_magnitude
+        if bbox:
+            min_lat, max_lat, min_lon, max_lon = bbox
+            params.update(
+                {
+                    "min_lat": min_lat,
+                    "max_lat": max_lat,
+                    "min_lon": min_lon,
+                    "max_lon": max_lon,
+                }
+            )
         data = self._get("/api/events", params)
         return [self._event_from_dict(e) for e in data.get("events", [])]
 
@@ -130,14 +301,30 @@ class RemoteStore:
         start: datetime | None = None,
         end: datetime | None = None,
         limit: int = 10000,
+        order: str = "asc",
     ) -> list[Observation]:
-        data = self._get("/api/obs", {"source": source, "series": series, "limit": limit})
-        obs = [self._obs_from_dict(source, series, p) for p in data.get("points", [])]
+        data = self._get(
+            "/api/obs",
+            {"source": source, "series": series, "limit": limit, "order": order},
+        )
+        obs = [
+            parsed
+            for point in data.get("points", [])
+            if (parsed := self._obs_from_dict(source, series, point)) is not None
+        ]
         if start is not None:
             obs = [o for o in obs if o.ts >= start]
         if end is not None:
             obs = [o for o in obs if o.ts <= end]
         return obs
+
+    def get_recent_series(self, source: str, series: str, limit: int = 120) -> list[Observation]:
+        rows = self.get_series(source, series, limit=limit, order="desc")
+        return list(reversed(rows))
+
+    def get_latest_observation(self, source: str, series: str) -> Observation | None:
+        rows = self.get_series(source, series, limit=1, order="desc")
+        return rows[0] if rows else None
 
     def latest_observations(self, source: str, prefix: str, since: datetime | None = None) -> list[Observation]:
         # Call sites always pass a full series name; prefix LIKE has one match.
@@ -146,20 +333,32 @@ class RemoteStore:
         if not points:
             return []
         obs = self._obs_from_dict(source, prefix, points[0])
+        if obs is None:
+            return []
         if since is not None and obs.ts < since:
             return []
         return [obs]
 
     @staticmethod
-    def _obs_from_dict(source: str, series: str, point: dict[str, Any]) -> Observation:
+    def _obs_from_dict(source: str, series: str, point: dict[str, Any]) -> Observation | None:
+        """Strict conversion: never fabricate a timestamp or a zero value."""
         from .models import parse_datetime
 
-        ts = parse_datetime(point.get("ts")) or datetime.now(timezone.utc)
+        ts = parse_datetime(point.get("ts"))
+        raw_value = point.get("value")
+        if ts is None or raw_value is None:
+            logger.warning("Skipping malformed remote observation for %s/%s", source, series)
+            return None
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            logger.warning("Skipping non-numeric remote observation for %s/%s", source, series)
+            return None
         return Observation(
             source=source,
             series=series,
             ts=ts,
-            value=float(point.get("value", 0.0)),
+            value=value,
             unit=point.get("unit"),
             extra_json=dict(point.get("extra") or {}),
         )
@@ -184,6 +383,7 @@ class RemoteStore:
             raise RemoteReadOnlyError(f"setting '{key}' is not writable in remote mode")
         try:
             self._post("/api/settings", {key: value})
+            self.invalidate_cache()
         except Exception as exc:  # noqa: BLE001
             logger.warning("Remote POST /api/settings failed: %s", exc)
             raise

@@ -83,7 +83,8 @@ class FireballAdapter(HttpAdapter):
             return row[i]
 
         for row in rows:
-            dt = _parse_dt(col(row, "date")) or now
+            parsed_time = _parse_dt(col(row, "date"))
+            dt = parsed_time or now
             lat = _fnum(col(row, "lat"))
             lon = _fnum(col(row, "lon"))
             if col(row, "lat-dir") == "S" and lat is not None:
@@ -96,6 +97,7 @@ class FireballAdapter(HttpAdapter):
             vel = _fnum(col(row, "vel"))
             date_s = col(row, "date") or dt.isoformat()
             extra = {
+                "time_estimated": parsed_time is None,
                 "energy_1e10_j": energy,
                 "impact_kt": impact,
                 "alt_km": alt,

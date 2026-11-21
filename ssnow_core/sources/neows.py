@@ -62,14 +62,19 @@ class NeoWsAdapter:
             )
             events, observations = self.parse(response.content, now)
         except Exception as exc:  # noqa: BLE001
-            store.record_failure(self.spec.id, now, str(exc), self.spec.cadence_seconds)
-            return FetchResult(self.spec.id, None, str(self.spec.url), "", [], [], error=str(exc))
+            from ..redact import redact_secrets
+
+            safe_error = redact_secrets(str(exc)) or ""
+            store.record_failure(self.spec.id, now, safe_error, self.spec.cadence_seconds)
+            return FetchResult(self.spec.id, None, str(self.spec.url), "", [], [], error=safe_error)
 
         store.upsert_events(events)
         store.upsert_observations(observations)
         store.record_success(self.spec.id, now, len(events) + len(observations), self.spec.cadence_seconds)
+        from ..redact import redact_url
+
         return FetchResult(
-            self.spec.id, response.status_code, str(response.url),
+            self.spec.id, response.status_code, redact_url(str(response.url)) or "",
             response.headers.get("content-type", ""), events, observations,
         )
 
@@ -86,7 +91,8 @@ class NeoWsAdapter:
                 if not approaches:
                     continue
                 ca = approaches[0]
-                occurred_at = _parse_close_approach(ca.get("close_approach_date_full")) or now
+                parsed_time = _parse_close_approach(ca.get("close_approach_date_full"))
+                occurred_at = parsed_time or now
                 miss = ca.get("miss_distance") or {}
                 vel = ca.get("relative_velocity") or {}
                 diam = ((obj.get("estimated_diameter") or {}).get("kilometers") or {})
@@ -103,6 +109,7 @@ class NeoWsAdapter:
                 except (TypeError, ValueError):
                     h_value = None
                 extra = {
+                    "time_estimated": parsed_time is None,
                     "neo_reference_id": obj.get("neo_reference_id"),
                     "absolute_magnitude_h": obj.get("absolute_magnitude_h"),
                     "miss_km": miss.get("kilometers"),

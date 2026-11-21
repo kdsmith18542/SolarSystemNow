@@ -11,6 +11,7 @@ import httpx
 
 from ..logging_config import get_logger
 from ..models import Event, Observation
+from ..redact import redact_secrets, redact_url
 from ..store import Store
 
 logger = get_logger("adapter")
@@ -95,22 +96,24 @@ class HttpAdapter(Adapter, ABC):
             response = self.request(client)
             response.raise_for_status()
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Fetch failed for %s: %s", self.spec.id, exc)
-            store.record_failure(self.spec.id, now, str(exc), self.spec.cadence_seconds)
+            safe_error = redact_secrets(str(exc)) or ""
+            logger.warning("Fetch failed for %s: %s", self.spec.id, safe_error)
+            store.record_failure(self.spec.id, now, safe_error, self.spec.cadence_seconds)
             return FetchResult(
                 self.spec.id,
                 getattr(getattr(exc, "response", None), "status_code", None),
-                str(getattr(getattr(exc, "request", None), "url", "")),
+                redact_url(str(getattr(getattr(exc, "request", None), "url", ""))) or "",
                 "",
                 [],
                 [],
-                error=str(exc),
+                error=safe_error,
             )
 
+        safe_url = redact_url(str(response.url)) or ""
         try:
             store.save_snapshot(
                 self.spec.id,
-                str(response.url),
+                safe_url,
                 response.content,
                 response.headers.get("content-type", ""),
                 status_code=response.status_code,
@@ -118,16 +121,17 @@ class HttpAdapter(Adapter, ABC):
             )
             events, observations = self.parse(response.content, response.headers.get("content-type", ""), now)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Parse failed for %s: %s", self.spec.id, exc)
-            store.record_failure(self.spec.id, now, f"parse: {exc}", self.spec.cadence_seconds)
+            safe_error = redact_secrets(f"parse: {exc}") or "parse error"
+            logger.warning("Parse failed for %s: %s", self.spec.id, safe_error)
+            store.record_failure(self.spec.id, now, safe_error, self.spec.cadence_seconds)
             return FetchResult(
                 self.spec.id,
                 response.status_code,
-                str(response.url),
+                safe_url,
                 response.headers.get("content-type", ""),
                 [],
                 [],
-                error=f"parse: {exc}",
+                error=safe_error,
             )
 
         self.persist(store, events, observations, now)
@@ -141,7 +145,7 @@ class HttpAdapter(Adapter, ABC):
         return FetchResult(
             self.spec.id,
             response.status_code,
-            str(response.url),
+            safe_url,
             response.headers.get("content-type", ""),
             events,
             observations,

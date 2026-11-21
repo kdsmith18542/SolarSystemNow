@@ -30,10 +30,11 @@ class GeomagAdapter:
             now = _utcnow()
 
         store.begin_attempt(self.spec.id, now)
-        try:
-            locations = store.get_setting("locations") or []
-            observations: list[Observation] = []
-            for loc in locations:
+        locations = store.get_setting("locations") or []
+        observations: list[Observation] = []
+        errors: list[str] = []
+        for loc in locations:
+            try:
                 params = {
                     "lat1": loc["lat"],
                     "lon1": loc["lon"],
@@ -52,9 +53,12 @@ class GeomagAdapter:
                 )
                 obs = self.parse(response.content, loc.get("key") or f"{loc['lat']},{loc['lon']}", now)
                 observations.extend(obs)
-        except Exception as exc:  # noqa: BLE001
-            store.record_failure(self.spec.id, now, str(exc), self.spec.cadence_seconds)
-            return FetchResult(self.spec.id, None, str(self.spec.url), "", [], [], error=str(exc))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(str(exc))
+        if errors and not observations:
+            err_msg = "; ".join(errors[:3])
+            store.record_failure(self.spec.id, now, err_msg, self.spec.cadence_seconds)
+            return FetchResult(self.spec.id, None, str(self.spec.url), "", [], [], error=err_msg)
 
         store.upsert_observations(observations)
         store.record_success(self.spec.id, now, len(observations), self.spec.cadence_seconds)

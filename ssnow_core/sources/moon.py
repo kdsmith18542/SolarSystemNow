@@ -43,7 +43,7 @@ def _fallback_moon(now: datetime) -> dict:
         "phase_angle": angle,
         "phase_name": _phase_name(angle),
         "illumination": illumination,
-        "distance_km": 384400.0,
+        "distance_km": None,
         "source": "analytic-fallback",
         "rise_utc": None,
         "set_utc": None,
@@ -111,6 +111,7 @@ class MoonAdapter:
         import math
 
         try:
+            from skyfield import almanac
             from skyfield.almanac import find_discrete, risings_and_settings
             from skyfield.api import Loader, Topos, load
 
@@ -124,10 +125,11 @@ class MoonAdapter:
             t = ts.from_datetime(now)
             earth = eph["earth"]
             moon = eph["moon"]
-            sun = eph["sun"]
             astrometric = earth.at(t).observe(moon)
-            separation = astrometric.separation_from(earth.at(t).observe(sun)).degrees
-            illumination = (1.0 - math.cos(math.radians(separation))) / 2.0
+            # Signed 0-360 elongation: 0=new, 90=first quarter, 180=full,
+            # 270=last quarter. Unsigned separation made waning unreachable.
+            phase_angle = float(almanac.moon_phase(eph, t).degrees) % 360.0
+            illumination = (1.0 - math.cos(math.radians(phase_angle))) / 2.0
             distance = astrometric.distance().km
 
             locations = store.get_setting("locations") or []
@@ -156,10 +158,10 @@ class MoonAdapter:
                         next_set_utc = dt.isoformat()
 
             return {
-                "phase_angle": float(separation),
+                "phase_angle": phase_angle,
                 "illumination": float(illumination),
                 "distance_km": float(distance),
-                "phase_name": _phase_name(float(separation)),
+                "phase_name": _phase_name(phase_angle),
                 "source": "skyfield",
                 "rise_utc": rise_utc,
                 "set_utc": set_utc,

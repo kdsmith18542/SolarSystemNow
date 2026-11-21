@@ -140,11 +140,13 @@ class SPCOutlookAdapter:
                 dn = int(props.get("DN")) if props.get("DN") is not None else None
             except (TypeError, ValueError):
                 dn = None
-            occurred_at = _parse_iso_utc(props.get("ISSUE_ISO")) or now
+            parsed_time = _parse_iso_utc(props.get("ISSUE_ISO"))
+            occurred_at = parsed_time or now
             label = props.get("LABEL") or "TSTM"
             label2 = props.get("LABEL2") or ""
             title = f"SPC {day} {hazard} {label} ({label2})".strip()
             extra = {
+                "time_estimated": parsed_time is None,
                 "day": day,
                 "hazard": hazard,
                 "dn": dn,

@@ -138,12 +138,13 @@ Locations are stored as a JSON list under the `"locations"` setting key:
 When querying location, always check `locations = store.get_setting("locations") or []` and take `locations[0]` if available, falling back to `store.get_setting("location")` or the default (London).
 
 ### Remote server mode (desktop)
-- `ssnow_desktop` views receive either a local `Store` or a `RemoteStore` (`ssnow_core/remote.py`); both duck-type the same read API. Views must use only the portable subset: `query_events`, `get_event_by_id`, `get_series`, `latest_observations`, `get_setting`/`set_setting` (only `locations`, `tide_stations`, `nasa_api_key`, `retention_days`), `all_source_states`, `stats`, `latest_asset`, notification methods.
+- `ssnow_desktop` views receive either a local `Store` or a `RemoteStore` (`ssnow_core/remote.py`); both duck-type the same read API. Views must use only the portable subset: `query_events` (incl. `bbox`), `get_event_by_id`, `get_series`/`get_recent_series`/`get_latest_observation`, `latest_observations`, `get_setting`/`set_setting` (only `locations`, `tide_stations`, `nasa_api_key`, `retention_days`), `all_source_states`, `stats`, `latest_asset`, notification methods.
 - `RemoteStore` never exposes local-only methods (`upsert_events`, `export_backup`, …) — they raise. Ingest in remote mode is a server-side `POST /api/ingest`; the desktop only refreshes.
 - The NASA key is write-only over HTTP: `get_setting("nasa_api_key")` returns `""` even when one is stored, so a blank field means "keep" (SettingsView skips the POST when blank in remote mode).
 - Toggle lives in QSettings (`ssnow`/`ssnow`: `remote_mode`, `remote_base_url`, `remote_token`) and applies on restart. Unreachable server → standalone fallback with a logged warning. Defaults: `http://localhost:8123`.
 - In remote mode the desktop subscribes to the server SSE feed (`SseListener` in `main_window.py`) and refreshes all views on `ingest_complete` — no Qt/network code in core, the listener lives in the desktop layer.
-- Write protection: `SSNOW_API_TOKEN` env on the server gates `POST /api/ingest`, `/api/settings`, `/api/sim/run` (`X-SSNOW-Token` or `Bearer`). The desktop Settings server section stores the same token (`remote_token`). GETs stay public. Locked by `test_api_write_token_gate` + `test_remote_token_header_on_writes`.
+- Remote reads go through `RemoteStore`'s background-prefetched read-through cache (`prefetch()` in a QThread; 5-minute TTL). View refreshes must use the cached read API, not raw `httpx` calls on the UI thread.
+- Write protection: `SSNOW_API_TOKEN` env on the server gates `POST /api/ingest`, `/api/settings`, `/api/sim/run` and GET `/api/settings` (`X-SSNOW-Token` or `Bearer`). The desktop Settings server section stores the same token (`remote_token`); public upstream GETs stay public. Locked by `test_api_write_token_gate` + `test_remote_token_header_on_writes`.
 - `query_events(bbox=...)` uses the `events_rtree` index (joined back to `events` so other filters apply); `/api/events` accepts `min_lat/max_lat/min_lon/max_lon`. `/api/weather/now` returns the per-location weather/AQ/marine strip (desktop Local Weather card parity).
 
 ### Notification System
@@ -177,7 +178,7 @@ Undelivered notifications are queried via `store.pending_notifications()` and ma
 - Rationale: we view more than Earth (Sun, Moon, asteroids, comets, solar wind). One geographic map + one solar-system schematic keeps it smooth and easy.
 
 ### Streamer / broadcaster tooling verdict: CONFIRMED
-- OBS F11 fullscreen + SSE `/api/stream/live` + threat dial + aurora-localized dial + CME watch + multi-location weather/AQ/marine + tides + quake/tsunami/volcano layers = full all-in-one loop (space → aurora call → local weather → hazard map). Validated for space-weather and weather streamers; no extra providers required.
+- OBS F11 fullscreen + SSE `/api/stream/live` + threat dial + aurora verdict card + CME watch + multi-location weather/AQ/marine + tides + quake/tsunami/volcano layers = full all-in-one loop (space → aurora call → local weather → hazard map). Validated for space-weather and weather streamers; no extra providers required.
 - P1 gap ports (2026-11-21, all US public domain / NASA, MIT-keepable): RTSW IMF Bz/Bt (`swpc_mag`, active-spacecraft only) + RTSW wind rewrite (`swpc_wind`, SCN 26-21), GOES proton flux (`swpc_proton`, S-scale), Kyoto Dst (`swpc_dst`), JPL fireballs (`jpl_fireball`), SPC Day1-3 outlooks (`spc_outlook`, polygon fills + centroids). Threat dial and tray alerts are Bz/proton/Dst-aware.
 - Known gap: DONKI provides no CME arrival timestamp, so the widget shows latest-CME watch verdict rather than a fabricated countdown.
 
@@ -200,6 +201,29 @@ Undelivered notifications are queried via `store.pending_notifications()` and ma
 
 ### RTSW notes (SCN 26-21)
 - `swpc_wind` now reads `json/rtsw/rtsw_wind_1m.json` and `swpc_mag` reads `json/rtsw/rtsw_mag_1m.json` (old `products/solar-wind/*` deleted 2026-04-30); filter `active=true`, keep `source` in `extra_json` provenance; tolerate quoted-string numbers.
+
+### Audit guardrails (2026-11-20, from the deep audit)
+- **Latest ≠ `get_series(limit=1)`**: `get_series()` is chronological (oldest first). Use
+  `get_latest_observation()` for scalars and `get_recent_series()` for trend tails. API
+  ordering must happen in SQL, not after a 10k fetch. Locked by multi-timestamp tests.
+- **Secrets**: any API key in a query string must be redacted before persisting a snapshot,
+  writing `source_state.last_error`, logging, or serving `/api/sources`. Use
+  `ssnow_core.redact.redact_secrets`; never expose `api_key`/`token`/`key` values.
+- **Assets are append-per-fetch** (`id` PK, indexed by `source,fetched_at`), one row per
+  file (schema v2 migration from the legacy source-PK table). Prune N newest per source;
+  never assume one row per channel.
+- **All timestamps are canonical UTC** (`+00:00`) before storage; naive input is UTC, never
+  host-local. SQL ordering/filtering on ISO strings depends on this.
+- **Settings are validated** with Pydantic before writing; malformed JSON must not reach
+  `Store.set_setting` or brick other endpoints.
+- **Missing data stays missing**: UI shows `—`/`NO DATA`; never a fabricated `0`, `QUIET`,
+  mean distance, or default speed. SIM output is labelled and requires real inputs.
+  Missing upstream event timestamps fall back to ingest time only with
+  `extra_json.time_estimated = true` (badged in event detail views).
+- **Retention is per-series**: solar-cycle series (`swpc:ssn_*`, `swpc:f107_*`) are exempt
+  from the generic 90-day prune; `weather:*`/geomag/tides are included.
+- **Web security defaults**: loopback bind unless overridden, no `*`+credentials CORS,
+  write token protects settings reads when configured, static assets are containment-checked.
 
 ### Imagery + radar + CME-watch conventions
 - Solar imagery channels (`sun_imagery` 171Å, `sun_sdo193`, `sun_sdo304`, `sun_hmi` magnetogram, `sun_lasco_c2/c3`) share `SunImageryAdapter` (URL-driven; `follow_redirects=True` for LASCO). Served via `/api/sun/images/{channel}`. Never fabricate a channel: HMI was only added after a live 200-JPEG HEAD check.

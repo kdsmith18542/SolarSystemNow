@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QPainter, QPen, QColor, QFont
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices, QPainter, QPen, QColor, QFont
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -54,10 +54,11 @@ def neo_record(event) -> dict:
         lo, hi = _f(ex.get("diameter_km_min")), _f(ex.get("diameter_km_max"))
         if lo is not None or hi is not None:
             size = ((lo or hi or 0) + (hi or lo or 0)) / 2.0
-    hazardous = bool(ex.get("hazardous") or ex.get("hazardous_candidate"))
+    comet = bool(ex.get("is_comet"))
+    hazardous = bool(ex.get("hazardous") or ex.get("hazardous_candidate")) and not comet
     kind = ex.get("kind")
     if not kind:
-        kind = "comet" if ex.get("is_comet") else "asteroid"
+        kind = "comet" if comet else "asteroid"
     if kind == "sentry":
         try:
             hazardous = float(ex.get("ps_cum", -99)) >= -5.0
@@ -72,6 +73,7 @@ def neo_record(event) -> dict:
         "km": km,
         "vel": vel,
         "size_km": size,
+        "size_estimated": bool(ex.get("diameter_estimated")),
         "hazardous": hazardous,
         "date": event.occurred_at,
     }
@@ -237,10 +239,12 @@ class NeoView(BaseView):
         layout.addWidget(self.orbit)
 
         self.table = QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels(["Name", "Type", "Approach (UTC)", "LD", "km", "Vel km/s", "Size / Hazard"])
+        self.table.setHorizontalHeaderLabels(["Name", "Type", "Date (UTC)", "LD", "km", "Vel km/s", "Size / Hazard"])
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setSelectionBehavior(self.table.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(self.table.EditTrigger.NoEditTriggers)
+        self.table.setToolTip("Double-click a row to open the JPL SBDB page")
+        self.table.doubleClicked.connect(self._open_selected)
         layout.addWidget(self.table)
 
         self.attr = QLabel("NASA JPL CNEOS NeoWs + SBDB CAD · distances in Lunar Distances (1 LD = 384,400 km)")
@@ -253,13 +257,13 @@ class NeoView(BaseView):
         recs = [neo_record(e) for e in events]
         # Sort: closest first; unknown distance last; then by date.
         recs.sort(key=lambda r: (r["ld"] is None, r["ld"] if r["ld"] is not None else 1e9))
-        pha = sum(1 for r in recs if r["hazardous"])
+        pha = sum(1 for r in recs if r["hazardous"] and r["kind"] != "sentry")
         under_moon = sum(1 for r in recs if r["ld"] is not None and r["ld"] < 1.0)
         comets = sum(1 for r in recs if r["kind"] == "comet")
         sentry = sum(1 for r in recs if r["kind"] == "sentry")
         self.header.setText(
-            f"Close approaches tracked: {len(recs)} · {pha} potentially hazardous · "
-            f"{under_moon} inside Moon orbit (<1 LD) · {comets} comets · {sentry} Sentry watch"
+            f"Close approaches tracked: {len(recs)} · {pha} PHA / PHA-candidate · "
+            f"{under_moon} tracked inside Moon orbit (<1 LD) · {comets} comets · {sentry} Sentry watch"
         )
         self.radar.set_items(recs)
         self.orbit.set_items(recs)
@@ -273,14 +277,31 @@ class NeoView(BaseView):
             self.table.setItem(row, 4, QTableWidgetItem(f"{r['km']:,.0f}" if r["km"] is not None else "—"))
             self.table.setItem(row, 5, QTableWidgetItem(f"{r['vel']:.1f}" if r["vel"] is not None else "—"))
             size_txt = human_size(r["size_km"])
+            if r["size_estimated"] and r["size_km"] is not None:
+                size_txt += " (estimated from H)"
             if r["kind"] == "sentry":
                 ps = (r["event"].extra_json or {}).get("ps_cum")
                 size_txt += f" · IMPACT WATCH PS {ps}"
+            elif r["kind"] == "comet":
+                size_txt += " · comet"
             elif r["hazardous"]:
-                size_txt += " · PHA"
+                size_txt += " · PHA candidate"
             item = QTableWidgetItem(size_txt)
+            if r["kind"] == "sentry":
+                self.table.item(row, 2).setToolTip("Sentry last-observation date, not a close-approach date")
+            if ev.url:
+                self.table.item(row, 0).setToolTip(ev.url)
             if r["hazardous"]:
                 item.setBackground(QColor("#fef2f2"))
                 item.setForeground(QColor("#b91c1c"))
             self.table.setItem(row, 6, item)
             self.table.item(row, 0).setData(Qt.ItemDataRole.UserRole, ev)
+
+    def _open_selected(self, index) -> None:
+        item = self.table.item(index.row(), 0)
+        if item is None:
+            return
+        event = item.data(Qt.ItemDataRole.UserRole)
+        url = getattr(event, "url", None)
+        if url and str(url).startswith(("http://", "https://")):
+            QDesktopServices.openUrl(QUrl(url))

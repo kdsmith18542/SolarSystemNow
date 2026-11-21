@@ -24,6 +24,8 @@ def load_json_fixture(name: str):
 @pytest.fixture
 def tmp_store(tmp_path, monkeypatch):
     monkeypatch.setenv("SSNOW_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SSNOW_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("SSNOW_CACHE_DIR", str(tmp_path / "cache"))
     store = Store()
     yield store
     store.close()

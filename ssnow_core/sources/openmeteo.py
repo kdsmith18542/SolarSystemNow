@@ -65,7 +65,7 @@ class OpenMeteoAdapter:
                     "longitude": loc["lon"],
                     "hourly": "temperature_2m,precipitation_probability,wind_speed_10m",
                     "daily": "sunrise,sunset",
-                    "timezone": "auto",
+                    "timezone": "UTC",
                     "forecast_days": "2",
                 }, now)
                 ev, obs = self.parse(payload, key, now)
@@ -79,6 +79,7 @@ class OpenMeteoAdapter:
                     "latitude": loc["lat"],
                     "longitude": loc["lon"],
                     "hourly": "wave_height,sea_surface_temperature,ocean_current_velocity",
+                    "timezone": "UTC",
                     "forecast_days": "2",
                 }, now)
                 _, mobs = self.parse_marine(marine, key, now)
@@ -92,6 +93,7 @@ class OpenMeteoAdapter:
                     "latitude": loc["lat"],
                     "longitude": loc["lon"],
                     "hourly": "us_aqi,pm2_5",
+                    "timezone": "UTC",
                     "forecast_days": "2",
                 }, now)
                 _, aobs = self.parse_air_quality(aq, key, now)
@@ -105,6 +107,7 @@ class OpenMeteoAdapter:
                     "latitude": point["lat"],
                     "longitude": point["lon"],
                     "hourly": "windspeed_10hPa",
+                    "timezone": "UTC",
                     "forecast_days": "1",
                 }, now)
                 _, vobs = self.parse_vortex(payload, point["key"], now)
@@ -213,4 +216,6 @@ def _parse_time_to_epoch(text: str) -> float:
     from datetime import datetime
 
     parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.timestamp()

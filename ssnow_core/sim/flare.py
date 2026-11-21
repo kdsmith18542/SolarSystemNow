@@ -19,6 +19,14 @@ AU_KM = 149_597_870.7
 CLASS_BASE = {"A": 1e-8, "B": 1e-7, "C": 1e-6, "M": 1e-5, "X": 1e-4}
 
 
+def flare_class_from_flux(flux_w_m2: float) -> tuple[str, float] | None:
+    """Derive (letter, subclass) from a measured GOES flux; no assumptions."""
+    for letter, base in (("X", 1e-4), ("M", 1e-5), ("C", 1e-6), ("B", 1e-7), ("A", 1e-8)):
+        if flux_w_m2 >= base:
+            return letter, max(1.0, min(9.9, flux_w_m2 / base))
+    return None
+
+
 @register
 class FlareArrivalScenario(Scenario):
     meta = ScenarioMeta(
@@ -73,6 +81,15 @@ class FlareArrivalScenario(Scenario):
                 min=1.0,
                 max=9.0,
             ),
+            Param(
+                id="elapsed_hours",
+                label="Elapsed since launch",
+                type="number",
+                unit="hours",
+                default=0.0,
+                min=0.0,
+                max=240.0,
+            ),
         ],
         output_labels={
             "arrival_hours": "Estimated arrival (hours from now)",
@@ -89,10 +106,12 @@ class FlareArrivalScenario(Scenario):
         dist_au = float(parameters["distance_au"])
         flare_class = str(parameters["flare_class"])
         subclass = float(parameters["flare_subclass"])
+        elapsed = max(0.0, float(parameters.get("elapsed_hours", 0.0) or 0.0))
 
         distance_km = dist_au * AU_KM
-        hours = distance_km / (speed * 3600.0)
-        window_hours = hours * 0.25  # ±25% empirical spread
+        total_hours = distance_km / (speed * 3600.0)
+        hours = max(0.0, total_hours - elapsed)
+        window_hours = total_hours * 0.25  # ±25% empirical spread
         arrival_utc = datetime.now(timezone.utc) + timedelta(hours=hours)
 
         # Peak flux (GOES).
@@ -116,6 +135,8 @@ class FlareArrivalScenario(Scenario):
             "arrival_window_hours": window_hours,
             "arrival_window_low_hours": max(0.0, hours - window_hours),
             "arrival_window_high_hours": hours + window_hours,
+            "total_travel_hours": total_hours,
+            "elapsed_hours": elapsed,
             "peak_flux_w_m2": peak_flux,
             "flare_class": flare_class,
             "flare_subclass": subclass,

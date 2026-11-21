@@ -240,10 +240,10 @@ def test_notifications_lifecycle(tmp_store):
 
 def test_prune_assets(tmp_store):
     now = datetime(2026, 11, 20, 21, 0, 0, tzinfo=timezone.utc)
-    # Save dummy assets
+    # Save dummy assets for one channel: append-per-fetch keeps every file row.
     for i in range(10):
         tmp_store.save_asset(
-            f"sun_{i}",
+            "sun_imagery",
             "https://example.com/sun.jpg",
             b"\xff\xd8\xff\xe0" + b"x" * 20,
             "image/jpeg",
@@ -251,7 +251,7 @@ def test_prune_assets(tmp_store):
             fetched_at=now + timedelta(minutes=i),
         )
     assert tmp_store.stats()["assets"] == 10
-    pruned = tmp_store.prune_assets_for_source("sun", keep_latest=5)
+    pruned = tmp_store.prune_assets_for_source("sun_imagery", keep_latest=5)
     assert pruned == 5
     assert tmp_store.stats()["assets"] == 5
 

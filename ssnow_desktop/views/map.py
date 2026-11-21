@@ -39,7 +39,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     border-radius: 6px; font-size: 11px; display: flex; gap: 10px;
     backdrop-filter: blur(4px); border: 1px solid rgba(255,255,255,0.1);
   }
-  .legend-item { display: flex; items-center; gap: 4px; }
+  .legend-item { display: flex; align-items: center; gap: 4px; }
   .legend-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
 </style>
 </head>
@@ -64,17 +64,25 @@ const CATEGORY_COLORS = {
   earthquake: '#ef4444',
   volcano: '#dc2626',
   wildfire: '#f97316',
+  storm: '#3b82f6',
   severe_storm: '#3b82f6',
   flood: '#06b6d4',
+  weather_alert: '#22d3ee',
   severe_weather: '#eab308',
   space_weather_alert: '#a855f7',
   cme: '#ec4899',
   geomagnetic_storm: '#8b5cf6',
+  solar_flare: '#f59e0b',
   neo: '#10b981',
   fireball: '#fb923c',
   severe_outlook: '#eab308',
   other: '#94a3b8'
 };
+function escapeHtml(value) {
+  return String(value === null || value === undefined ? '' : value)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
 
 function initMap() {
   if (typeof maplibregl === 'undefined') {
@@ -87,6 +95,7 @@ function initMap() {
     center: [%%LON%%, %%LAT%%],
     zoom: %%ZOOM%%,
   });
+  window.__ssnowMap = map;
   map.on('load', () => {
     // NEXRAD radar overlay (IEM WMS, US coverage, live tiles — nothing stored).
     if ('%%RADAR%%' === 'true') {
@@ -128,7 +137,10 @@ function initMap() {
       const props = feature.properties;
       el.style.backgroundColor = CATEGORY_COLORS[props.category] || CATEGORY_COLORS.other;
       const popup = new maplibregl.Popup({ offset: 8 }).setHTML(
-        `<div style="color:#111;"><strong>${props.title || 'Event'}</strong><br>${props.category} · ${props.time || ''}<br>${props.magnitude ? props.magnitude + ' ' + (props.magnitude_unit || '') : ''}</div>`
+        `<div style="color:#111;"><strong>${escapeHtml(props.title || 'Event')}</strong><br>` +
+        `${escapeHtml(props.category)} · ${escapeHtml(props.time || '')}<br>` +
+        `${escapeHtml(props.magnitude || '')} ${escapeHtml(props.magnitude_unit || '')}<br>` +
+        `<em>Source: ${escapeHtml(props.source || '—')}</em></div>`
       );
       new maplibregl.Marker(el).setLngLat([lon, lat]).setPopup(popup).addTo(map);
     }
@@ -150,7 +162,7 @@ class MapView(BaseView):
     LAYERS: list[tuple[str, str, list[str]]] = [
         ("quake", "Quakes+Tsunami", ["earthquake"]),
         ("volcano_fire", "Volcano+Fire", ["volcano", "wildfire"]),
-        ("storm", "Storm/Flood/Alerts", ["storm", "flood", "weather_alert"]),
+        ("storm", "Storm/Flood/Alerts", ["storm", "flood", "weather_alert", "severe_storm", "severe_weather"]),
         ("severe", "SPC Outlooks", ["severe_outlook"]),
         ("fireball", "Fireballs", ["fireball"]),
         ("space", "Space weather", ["space_weather_alert", "cme", "geomagnetic_storm", "solar_flare"]),
@@ -195,11 +207,40 @@ class MapView(BaseView):
         self.view = QWebEngineView()
         self.view.setHtml("<p>Loading map…</p>")
         layout.addWidget(self.view)
-        self.refresh()
+        if not getattr(self.store, "defer_initial_refresh", False):
+            self.refresh()
 
     def refresh(self) -> None:
         if self.view is None:
             return
+        if getattr(self, "_refresh_pending", False):
+            self._refresh_again = True
+            return
+        self._refresh_pending = True
+
+        def _with_state(value) -> None:
+            self._refresh_pending = False
+            if value:
+                try:
+                    state = json.loads(value)
+                    self._center = (float(state["lon"]), float(state["lat"]))
+                    self._zoom = float(state["zoom"])
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    pass
+            self._render_map()
+            if getattr(self, "_refresh_again", False):
+                self._refresh_again = False
+                self.refresh()
+
+        self.view.page().runJavaScript(
+            "window.__ssnowMap ? JSON.stringify({"
+            "lon: window.__ssnowMap.getCenter().lng, "
+            "lat: window.__ssnowMap.getCenter().lat, "
+            "zoom: window.__ssnowMap.getZoom()}) : ''",
+            _with_state,
+        )
+
+    def _render_map(self) -> None:
         active: set[str] = set()
         for lid, _label, cats in self.LAYERS:
             box = self._boxes.get(lid)
@@ -208,11 +249,30 @@ class MapView(BaseView):
         end = datetime.now(timezone.utc)
         start = end - timedelta(days=30)
         events = self.store.query_events(start=start, end=end, limit=500)
+
+        def _expired(event) -> bool:
+            ex = event.extra_json or {}
+            for key in ("expires", "expire_iso"):
+                raw = ex.get(key)
+                if not raw:
+                    continue
+                try:
+                    stamp = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+                    if stamp.tzinfo is None:
+                        stamp = stamp.replace(tzinfo=timezone.utc)
+                    if stamp < end:
+                        return True
+                except ValueError:
+                    continue
+            return False
+
         features = []
         for event in events:
             if event.latitude is None or event.longitude is None:
                 continue
             if event.category not in active:
+                continue
+            if event.category in ("weather_alert", "severe_outlook") and _expired(event):
                 continue
             ex = event.extra_json or {}
             badge = " 🌊 TSUNAMI" if ex.get("tsunami") in (1, True) else ""
@@ -254,17 +314,17 @@ class MapView(BaseView):
                         "geometry": geom,
                     }
                 )
-        geojson = json.dumps({"type": "FeatureCollection", "features": features})
+        geojson = json.dumps({"type": "FeatureCollection", "features": features}).replace("</", "<\\/")
         lon, lat = self._center if self._center is not None else (20.0, 10.0)
         zoom = self._zoom if self._zoom is not None else 1.1
         oval = None
         oval_n: list = []
         oval_s: list = []
         if self._aurora_box is not None and self._aurora_box.isChecked():
-            oval_obs = self.store.get_series("aurora", "aurora:oval_equatorward_deg", limit=1)
+            oval_obs = self.store.get_latest_observation("aurora", "aurora:oval_equatorward_deg")
             if oval_obs:
-                oval = oval_obs[-1].value
-                extra = oval_obs[-1].extra_json or {}
+                oval = oval_obs.value
+                extra = oval_obs.extra_json or {}
                 oval_n = extra.get("boundary_north") or []
                 oval_s = extra.get("boundary_south") or []
         html = (
@@ -273,8 +333,8 @@ class MapView(BaseView):
             .replace("%%STYLE%%", MAP_STYLE)
             .replace("%%RADAR%%", "true" if (self._radar_box is not None and self._radar_box.isChecked()) else "false")
             .replace("%%OVAL%%", f"{oval:.1f}" if oval is not None else "null")
-            .replace("%%OVAL_N%%", json.dumps(oval_n))
-            .replace("%%OVAL_S%%", json.dumps(oval_s))
+            .replace("%%OVAL_N%%", json.dumps(oval_n).replace("</", "<\\/"))
+            .replace("%%OVAL_S%%", json.dumps(oval_s).replace("</", "<\\/"))
             .replace("%%LON%%", f"{lon:.4f}")
             .replace("%%LAT%%", f"{lat:.4f}")
             .replace("%%ZOOM%%", f"{zoom:.1f}")
@@ -286,9 +346,9 @@ class MapView(BaseView):
         """Center the map on an event (Show on Map); sticky until Reset."""
         self._center = (longitude, latitude)
         self._zoom = 5.0
-        self.refresh()
+        self._render_map()
 
     def reset_view(self) -> None:
         self._center = None
         self._zoom = None
-        self.refresh()
+        self._render_map()

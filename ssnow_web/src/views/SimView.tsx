@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../services/api';
-import type { ScenarioMeta, SimScenario } from '../services/api';
+import type { SimScenario } from '../services/api';
 
 function fmt(value: any) {
   if (value === null || value === undefined) return '—';
@@ -9,7 +9,7 @@ function fmt(value: any) {
 }
 
 export default function SimView() {
-  const [scenarios, setScenarios] = useState<ScenarioMeta[]>([]);
+  const [scenarios, setScenarios] = useState<SimScenario[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [params, setParams] = useState<Record<string, any>>({});
   const [result, setResult] = useState<any>(null);
@@ -102,10 +102,6 @@ export default function SimView() {
           >
             {loading ? 'Running…' : 'Run simulation'}
           </button>
-          <button
-            onClick={() => api.simRun({ id: scenario.id, params }).then(() => {})}
-            className="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded text-sm font-medium text-slate-200 hidden"
-          />
           {error && <span className="ml-3 text-xs text-red-400">{error}</span>}
         </div>
       </div>

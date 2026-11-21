@@ -15,7 +15,10 @@ export default function Settings() {
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const load = () => api.settings.get().then(setSettings).catch((e) => setMsg(String(e)));
+  const load = () => api.settings.get().then((s) => {
+    setSettings(s);
+    setRetention(String(s.retention_days ?? 90));
+  }).catch((e) => setMsg(String(e)));
 
   useEffect(() => { load(); }, []);
 

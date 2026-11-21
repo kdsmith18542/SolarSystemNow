@@ -12,7 +12,6 @@ docs
 tests
 ssnow_desktop
 ssnow_web/node_modules
-ssnow_web/src
 ssnow_web/e2e
 ssnow_web/playwright-report
 ssnow_web/test-results

@@ -42,10 +42,11 @@ class TidesAdapter:
             now = _utcnow()
 
         store.begin_attempt(self.spec.id, now)
-        try:
-            stations = store.get_setting("tide_stations", []) or []
-            observations: list[Observation] = []
-            for station in stations:
+        stations = store.get_setting("tide_stations", []) or []
+        observations: list[Observation] = []
+        errors: list[str] = []
+        for station in stations:
+            try:
                 params = {
                     "begin_date": now.strftime("%Y%m%d"),
                     "end_date": (now + timedelta(days=1)).strftime("%Y%m%d"),
@@ -69,9 +70,12 @@ class TidesAdapter:
                 )
                 obs = self.parse(response.content, str(station["id"]), now)
                 observations.extend(obs)
-        except Exception as exc:  # noqa: BLE001
-            store.record_failure(self.spec.id, now, str(exc), self.spec.cadence_seconds)
-            return FetchResult(self.spec.id, None, str(self.spec.url), "", [], [], error=str(exc))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(str(exc))
+        if errors and not observations:
+            err_msg = "; ".join(errors[:3])
+            store.record_failure(self.spec.id, now, err_msg, self.spec.cadence_seconds)
+            return FetchResult(self.spec.id, None, str(self.spec.url), "", [], [], error=err_msg)
 
         store.upsert_observations(observations)
         store.record_success(self.spec.id, now, len(observations), self.spec.cadence_seconds)

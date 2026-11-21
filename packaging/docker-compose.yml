@@ -15,7 +15,9 @@ services:
     container_name: ssnow-web
     restart: unless-stopped
     ports:
-      - "8123:8123"
+      # Loopback by default. For LAN access bind 0.0.0.0:8123 AND set
+      # SSNOW_API_TOKEN below; settings/locations become public otherwise.
+      - "127.0.0.1:8123:8123"
     volumes:
       - ssnow-data:/data
     environment:

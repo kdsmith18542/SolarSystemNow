@@ -157,3 +157,64 @@ def test_notifications_in_memory():
     assert len(store.pending_notifications()) == 1
     store.mark_notification_delivered("a")
     assert store.pending_notifications() == []
+
+
+def test_read_through_cache_avoids_repeat_requests():
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={
+            "locations": [{"name": "Home", "lat": 1.0, "lon": 2.0, "key": "1,2"}],
+            "tide_stations": [], "nasa_api_key": False, "retention_days": 90,
+        }, request=request)
+
+    store = RemoteStore("http://srv:8123", client=_client(handler))
+    assert store.get_setting("locations")[0]["name"] == "Home"
+    assert store.get_setting("locations")[0]["name"] == "Home"
+    assert calls["n"] == 1
+    store.invalidate_cache()
+    store.get_setting("locations")
+    assert calls["n"] == 2
+    store.close()
+
+
+def test_prefetch_warms_cache_for_view_reads():
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        path = request.url.path
+        if path == "/api/settings":
+            body = {
+                "locations": [{"name": "Home", "lat": 1.0, "lon": 2.0, "key": "1,2"}],
+                "tide_stations": [{"id": "8454000", "name": "Port"}],
+                "nasa_api_key": False,
+                "retention_days": 90,
+            }
+        elif path == "/api/sources":
+            body = {"sources": []}
+        elif path == "/api/events":
+            body = {"count": 0, "events": []}
+        elif path == "/api/obs":
+            body = {"source": "x", "series": "x", "unit": None, "count": 0, "points": []}
+        elif path == "/api/neos":
+            body = {"count": 0, "pha": 0, "inside_moon": 0, "comets": 0, "neos": []}
+        elif path == "/api/weather/now":
+            body = {"count": 0, "locations": []}
+        elif path == "/api/sim/cme-watch":
+            body = {"available": False, "reason": "none"}
+        else:
+            body = {}
+        return httpx.Response(200, json=body, request=request)
+
+    store = RemoteStore("http://srv:8123", client=_client(handler))
+    result = store.prefetch()
+    assert result["ok"] > 10
+    before = calls["n"]
+    # These reads are exactly the keys prefetch warmed.
+    assert store.get_setting("locations")[0]["name"] == "Home"
+    assert store.get_latest_observation("swpc", "swpc:kp") is None
+    assert store.query_events(limit=1, categories=["earthquake"]) == []
+    assert calls["n"] == before
+    store.close()

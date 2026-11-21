@@ -66,9 +66,12 @@ class SentryAdapter(HttpAdapter):
             h_val = _fnum(row.get("h"))
             try:
                 last_obs = datetime.strptime(str(row.get("last_obs") or ""), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                time_estimated = False
             except ValueError:
                 last_obs = now
+                time_estimated = True
             extra = {
+                "time_estimated": time_estimated,
                 "des": des,
                 "fullname": fullname,
                 "kind": "sentry",
@@ -105,3 +108,8 @@ class SentryAdapter(HttpAdapter):
                 )
             )
         return events, []
+
+    def persist(self, store, events, observations, now=None) -> None:
+        # Sentry is a current top-N snapshot; drop objects that fell out.
+        store.delete_events_not_in("sentry", [event.id for event in events])
+        super().persist(store, events, observations, now)

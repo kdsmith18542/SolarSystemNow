@@ -43,7 +43,15 @@ PRAGMA_STATEMENTS = (
     "PRAGMA foreign_keys=ON",
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+# Lifetime context series must survive the generic 90-day observation prune.
+CYCLE_SERIES = (
+    "swpc:ssn_observed",
+    "swpc:f107_observed",
+    "swpc:ssn_predicted",
+    "swpc:f107_predicted",
+)
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS events (
@@ -101,7 +109,8 @@ CREATE TABLE IF NOT EXISTS snapshots (
 CREATE INDEX IF NOT EXISTS snapshots_source ON snapshots(source, fetched_at DESC);
 
 CREATE TABLE IF NOT EXISTS assets (
-    source TEXT PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
     url TEXT NOT NULL,
     fetched_at TEXT NOT NULL,
     content_type TEXT NOT NULL,
@@ -110,6 +119,7 @@ CREATE TABLE IF NOT EXISTS assets (
     status_code INTEGER,
     error TEXT
 );
+CREATE INDEX IF NOT EXISTS assets_source_time ON assets(source, fetched_at DESC);
 
 CREATE TABLE IF NOT EXISTS source_state (
     source_id TEXT PRIMARY KEY,
@@ -207,10 +217,21 @@ ON CONFLICT(id) DO UPDATE SET
 
 
 def _dt_to_iso(value: datetime | str | None) -> str | None:
+    """Serialize to canonical UTC (+00:00).
+
+    Strings are parsed first (so upstream offsets such as ``-06:00`` are
+    converted instead of stored lexically), naive values are treated as UTC,
+    and unparseable strings are returned unchanged as a last resort.
+    """
     if value is None:
         return None
     if isinstance(value, str):
-        return value
+        parsed = _dt_from_iso(value)
+        if parsed is None:
+            return value
+        value = parsed
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc).isoformat()
 
 
@@ -265,6 +286,9 @@ class Store:
         for statement in PRAGMA_STATEMENTS:
             self._conn.execute(statement)
         self._conn.executescript(SCHEMA_SQL)
+        # Destructive/structural migrations must run before the additive
+        # self-heal pass (ALTER cannot add a PRIMARY KEY column).
+        self._migrate_assets_table()
         self._ensure_columns()
         row = self._conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
         if row is None:
@@ -277,7 +301,121 @@ class Store:
             current = int(row[0])
             if current < SCHEMA_VERSION:
                 self.migrate(current)
+        self._normalize_legacy_event_timestamps()
+        self._backfill_rtree()
+        self._scrub_persisted_secrets()
         self._conn.commit()
+
+    def _migrate_assets_table(self) -> None:
+        """Legacy assets keyed by source only (one row per channel); rebuild
+        as append-per-fetch so pruning can actually delete old files."""
+        cols = {row[1] for row in self._conn.execute("PRAGMA table_info(assets)").fetchall()}
+        if not cols or "id" in cols:
+            return
+        logger.warning("migrating legacy assets table to append-per-fetch (%s)", self.db_path)
+        self._conn.executescript(
+            """
+            ALTER TABLE assets RENAME TO assets_legacy;
+            CREATE TABLE assets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL,
+                url TEXT NOT NULL,
+                fetched_at TEXT NOT NULL,
+                content_type TEXT NOT NULL,
+                path TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                status_code INTEGER,
+                error TEXT
+            );
+            INSERT INTO assets (source, url, fetched_at, content_type, path, size_bytes, status_code, error)
+                SELECT source, url, fetched_at, content_type, path, size_bytes, status_code, error
+                FROM assets_legacy;
+            DROP TABLE assets_legacy;
+            CREATE INDEX IF NOT EXISTS assets_source_time ON assets(source, fetched_at DESC);
+            """
+        )
+        self._conn.commit()
+
+    def _normalize_legacy_event_timestamps(self) -> None:
+        """One-time rewrite of legacy event timestamps to canonical UTC.
+
+        Older versions stored upstream offsets verbatim (e.g. NWS ``-06:00``),
+        which made lexical SQL ordering/filtering wrong.
+        """
+        row = self._conn.execute(
+            "SELECT value FROM meta WHERE key = 'timestamps_utc_version'"
+        ).fetchone()
+        if row is not None and row[0] == "1":
+            return
+        rows = self._conn.execute(
+            "SELECT id, occurred_at, updated_at, ingested_at FROM events"
+        ).fetchall()
+        updates = []
+        for item in rows:
+            new_values = (
+                _dt_to_iso(item["occurred_at"]),
+                _dt_to_iso(item["updated_at"]),
+                _dt_to_iso(item["ingested_at"]),
+            )
+            if new_values != (item["occurred_at"], item["updated_at"], item["ingested_at"]):
+                updates.append((*new_values, item["id"]))
+        if updates:
+            self._conn.executemany(
+                "UPDATE events SET occurred_at = ?, updated_at = ?, ingested_at = ? WHERE id = ?",
+                updates,
+            )
+        self._conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES ('timestamps_utc_version', '1')"
+        )
+        self._conn.commit()
+
+    def _backfill_rtree(self) -> None:
+        """Remove orphan R-tree rows and index geolocated events once."""
+        try:
+            self._conn.execute(
+                "DELETE FROM events_rtree WHERE rowid NOT IN (SELECT rowid FROM events)"
+            )
+            row = self._conn.execute(
+                "SELECT value FROM meta WHERE key = 'rtree_backfill_version'"
+            ).fetchone()
+            if row is None or row[0] != "1":
+                self._conn.execute(
+                    """
+                    INSERT OR REPLACE INTO events_rtree(rowid, min_lat, max_lat, min_lon, max_lon)
+                    SELECT rowid, latitude, latitude, longitude, longitude FROM events
+                    WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+                      AND rowid NOT IN (SELECT rowid FROM events_rtree)
+                    """
+                )
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO meta(key, value) VALUES ('rtree_backfill_version', '1')"
+                )
+        except sqlite3.Error as exc:
+            logger.warning("R-tree backfill skipped: %s", exc)
+
+    def _scrub_persisted_secrets(self) -> None:
+        """One-time redaction of keys leaked by older versions into snapshot
+        URLs and source-state error strings."""
+        from .redact import redact_secrets, redact_url
+
+        try:
+            rows = self._conn.execute(
+                "SELECT sha256, url FROM snapshots WHERE url LIKE '%api_key=%' OR url LIKE '%apikey=%' OR url LIKE '%access_token=%' OR url LIKE '%token=%'"
+            ).fetchall()
+            for sha, url in rows:
+                self._conn.execute(
+                    "UPDATE snapshots SET url = ? WHERE sha256 = ?", (redact_url(url), sha)
+                )
+            rows = self._conn.execute(
+                "SELECT source_id, last_error FROM source_state WHERE last_error LIKE '%api_key=%' OR last_error LIKE '%apikey=%' OR last_error LIKE '%access_token=%' OR last_error LIKE '%token=%'"
+            ).fetchall()
+            for source_id, error in rows:
+                self._conn.execute(
+                    "UPDATE source_state SET last_error = ? WHERE source_id = ?",
+                    (redact_secrets(error), source_id),
+                )
+        except sqlite3.Error as exc:
+            logger.warning("secret scrub skipped: %s", exc)
 
     def _ensure_columns(self) -> None:
         """Self-heal older databases: add any table columns that exist in
@@ -312,8 +450,8 @@ class Store:
         """Apply versioned schema migrations in order (complex/destructive
         changes only; simple column additions are auto-healed above)."""
         _MIGRATIONS: dict[int, str] = {
-            # Future migrations go here, e.g.:
-            # 2: "ALTER TABLE events ADD COLUMN extra2_json TEXT;",
+            # 2: assets are append-per-fetch; rebuilt in _migrate_assets_table().
+            2: "CREATE INDEX IF NOT EXISTS assets_source_time ON assets(source, fetched_at DESC);",
         }
         for version in sorted(k for k in _MIGRATIONS if k > current_version):
             self._conn.executescript(_MIGRATIONS[version])
@@ -344,6 +482,15 @@ class Store:
         )
         self._conn.commit()
 
+    def set_settings(self, values: dict[str, Any]) -> None:
+        """Atomically write multiple validated settings."""
+        with self.transaction() as cursor:
+            for key, value in values.items():
+                cursor.execute(
+                    "INSERT OR REPLACE INTO settings(key, value_json) VALUES (?, ?)",
+                    (key, json.dumps(value)),
+                )
+
     # ---- events -------------------------------------------------------
 
     def upsert_events(self, events: list[Event]) -> int:
@@ -355,6 +502,13 @@ class Store:
                 payload["updated_at"] = _dt_to_iso(payload.get("updated_at"))
                 payload["ingested_at"] = _dt_to_iso(payload.get("ingested_at"))
                 payload["extra_json"] = json.dumps(payload.get("extra_json") or {})
+                old = cursor.execute(
+                    "SELECT rowid FROM events WHERE id = ?", (event.id,)
+                ).fetchone()
+                if old is not None:
+                    # REPLACE reuses rowids; clear the old spatial row even
+                    # when the new record has no coordinates.
+                    cursor.execute("DELETE FROM events_rtree WHERE rowid = ?", (old[0],))
                 cursor.execute(INSERT_OR_REPLACE_EVENT, payload)
                 count += 1
 
@@ -367,6 +521,24 @@ class Store:
                             (row[0], event.latitude, event.latitude, event.longitude, event.longitude),
                         )
         return count
+
+    @_locked
+    def delete_events_not_in(self, source: str, keep_ids: list[str]) -> int:
+        """Replace a source's current-state set (e.g. Sentry top-N)."""
+        params: list[Any] = [source]
+        if keep_ids:
+            placeholders = ",".join("?" for _ in keep_ids)
+            sql = f"DELETE FROM events WHERE source = ? AND id NOT IN ({placeholders})"
+            params.extend(keep_ids)
+        else:
+            sql = "DELETE FROM events WHERE source = ?"
+        cursor = self._conn.execute(sql, params)
+        deleted = cursor.rowcount or 0
+        self._conn.execute(
+            "DELETE FROM events_rtree WHERE rowid NOT IN (SELECT rowid FROM events)"
+        )
+        self._conn.commit()
+        return deleted
 
     def get_event_by_id(self, event_id: str) -> Event | None:
         """O(1) primary-key lookup for a single event."""
@@ -437,7 +609,7 @@ class Store:
               AND occurred_at >= ? AND occurred_at <= ?
               AND latitude BETWEEN ? AND ?
               AND longitude BETWEEN ? AND ?
-            ORDER BY ABS(occurred_at - ?) ASC
+            ORDER BY ABS(julianday(occurred_at) - julianday(?)) ASC
             LIMIT 1
             """,
             (
@@ -505,33 +677,53 @@ class Store:
                 count += 1
         return count
 
+    def _observation_from_row(self, row: sqlite3.Row) -> Observation:
+        return Observation(
+            source=row["source"],
+            series=row["series"],
+            ts=_dt_from_iso(row["ts"]),
+            value=row["value"],
+            unit=row["unit"],
+            extra_json=json.loads(row["extra_json"] or "{}"),
+        )
+
     @_locked
     def latest_observations(self, source: str, prefix: str, since: datetime | None = None) -> list[Observation]:
+        """Newest observation per matching series (SQL window query)."""
         conditions = ["source = ?", "series LIKE ?"]
         params: list[Any] = [source, f"{prefix}%"]
         if since is not None:
             conditions.append("ts >= ?")
             params.append(_dt_to_iso(since))
         sql = (
-            f"SELECT * FROM observations WHERE {' AND '.join(conditions)} "
-            "ORDER BY series ASC, ts DESC"
+            "SELECT * FROM ("
+            "  SELECT *, ROW_NUMBER() OVER (PARTITION BY series ORDER BY ts DESC) AS rn"
+            f"  FROM observations WHERE {' AND '.join(conditions)}"
+            ") WHERE rn = 1 ORDER BY series ASC"
         )
         rows = self._conn.execute(sql, params).fetchall()
-        grouped: dict[str, list[Observation]] = {}
-        for row in rows:
-            obs = Observation(
-                source=row["source"],
-                series=row["series"],
-                ts=_dt_from_iso(row["ts"]),
-                value=row["value"],
-                unit=row["unit"],
-                extra_json=json.loads(row["extra_json"] or "{}"),
-            )
-            grouped.setdefault(obs.series, []).append(obs)
-        return [obs_list[0] for obs_list in grouped.values()]
+        return [self._observation_from_row(row) for row in rows]
 
     @_locked
-    def get_series(self, source: str, series: str, start: datetime | None = None, end: datetime | None = None, limit: int = 10000) -> list[Observation]:
+    def get_latest_observation(self, source: str, series: str) -> Observation | None:
+        """Single newest observation for an exact source/series."""
+        row = self._conn.execute(
+            "SELECT * FROM observations WHERE source = ? AND series = ? "
+            "ORDER BY ts DESC LIMIT 1",
+            (source, series),
+        ).fetchone()
+        return self._observation_from_row(row) if row else None
+
+    @_locked
+    def get_series(
+        self,
+        source: str,
+        series: str,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        limit: int = 10000,
+        order: str = "asc",
+    ) -> list[Observation]:
         conditions = ["source = ?", "series = ?"]
         params: list[Any] = [source, series]
         if start is not None:
@@ -540,20 +732,20 @@ class Store:
         if end is not None:
             conditions.append("ts <= ?")
             params.append(_dt_to_iso(end))
-        sql = f"SELECT * FROM observations WHERE {' AND '.join(conditions)} ORDER BY ts ASC LIMIT ?"
-        params.append(limit)
+        direction = "DESC" if str(order).lower() == "desc" else "ASC"
+        safe_limit = max(1, int(limit))
+        sql = (
+            f"SELECT * FROM observations WHERE {' AND '.join(conditions)} "
+            f"ORDER BY ts {direction} LIMIT ?"
+        )
+        params.append(safe_limit)
         rows = self._conn.execute(sql, params).fetchall()
-        return [
-            Observation(
-                source=row["source"],
-                series=row["series"],
-                ts=_dt_from_iso(row["ts"]),
-                value=row["value"],
-                unit=row["unit"],
-                extra_json=json.loads(row["extra_json"] or "{}"),
-            )
-            for row in rows
-        ]
+        return [self._observation_from_row(row) for row in rows]
+
+    def get_recent_series(self, source: str, series: str, limit: int = 120) -> list[Observation]:
+        """Newest *limit* observations, returned oldest-first for charts."""
+        rows = self.get_series(source, series, limit=limit, order="desc")
+        return list(reversed(rows))
 
     # ---- snapshots ----------------------------------------------------
 
@@ -573,7 +765,13 @@ class Store:
     ) -> SnapshotRecord:
         import hashlib
 
-        sha256 = hashlib.sha256(payload).hexdigest()
+        from .redact import redact_secrets, redact_url
+
+        url = redact_url(url) or ""
+        error = redact_secrets(error)
+        # Include the source so identical payloads from different feeds do not
+        # overwrite each other's provenance row.
+        sha256 = hashlib.sha256(source.encode("utf-8") + b"\0" + payload).hexdigest()
         path = self._snapshot_path(sha256)
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -625,13 +823,14 @@ class Store:
     ) -> None:
         fetched_at = fetched_at or datetime.now(timezone.utc)
         suffix = os.path.splitext(url.split("?")[0])[-1] or ".bin"
-        name = f"{source}-{int(fetched_at.timestamp())}{suffix}"
+        # Microseconds keep multiple fetches in the same second distinct.
+        name = f"{source}-{int(fetched_at.timestamp() * 1_000_000)}{suffix}"
         path = self.assets_dir / name
         path.write_bytes(payload)
         with self.transaction() as cursor:
             cursor.execute(
                 """
-                INSERT OR REPLACE INTO assets (source, url, fetched_at, content_type, path, size_bytes, status_code, error)
+                INSERT INTO assets (source, url, fetched_at, content_type, path, size_bytes, status_code, error)
                 VALUES (:source, :url, :fetched_at, :content_type, :path, :size_bytes, :status_code, :error)
                 """,
                 {
@@ -655,13 +854,43 @@ class Store:
         return row[0] if row is not None else None
 
     @_locked
-    def prune_observations_before(self, source: str, series_like: str, cutoff: datetime) -> int:
-        cursor = self._conn.execute(
-            "DELETE FROM observations WHERE source = ? AND series LIKE ? AND ts < ?",
-            (source, series_like, _dt_to_iso(cutoff)),
-        )
+    def prune_observations_before(
+        self,
+        source: str,
+        series_like: str,
+        cutoff: datetime,
+        exclude_series: tuple[str, ...] | list[str] | None = None,
+    ) -> int:
+        sql = "DELETE FROM observations WHERE source = ? AND series LIKE ? AND ts < ?"
+        params: list[Any] = [source, series_like, _dt_to_iso(cutoff)]
+        if exclude_series:
+            placeholders = ",".join("?" for _ in exclude_series)
+            sql += f" AND series NOT IN ({placeholders})"
+            params.extend(exclude_series)
+        cursor = self._conn.execute(sql, params)
         self._conn.commit()
         return cursor.rowcount if cursor.rowcount is not None else 0
+
+    def prune_observations(self, retention_days: int | None = None) -> int:
+        """Prune per-series retention policies, preserving solar-cycle context."""
+        days = int(retention_days if retention_days is not None else (self.get_setting("retention_days") or 90))
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, days))
+        policies: list[tuple[str, str, tuple[str, ...] | None]] = [
+            ("swpc", "swpc:%", CYCLE_SERIES),
+            ("aurora", "aurora:%", None),
+            ("openmeteo", "weather:%", None),
+            ("openmeteo", "air:%", None),
+            ("openmeteo", "marine:%", None),
+            ("openmeteo", "strato:%", None),
+            ("geomag", "geomag:%", None),
+            ("tides", "tides:%", None),
+            ("moon", "moon:%", None),
+            ("solarwind", "solarwind:%", None),
+        ]
+        deleted = 0
+        for source, prefix, exclude in policies:
+            deleted += self.prune_observations_before(source, prefix, cutoff, exclude)
+        return deleted
 
     @_locked
     def prune_snapshots_for_source(self, source: str, retention_days: int) -> int:
@@ -703,12 +932,28 @@ class Store:
         self._conn.commit()
         return len(rows)
 
-    def prune_assets_for_source(self, source: str, keep_latest: int = 7) -> int:
-        """Keep only the N most recent assets for a source, delete older files."""
+    def prune_assets_for_source(self, source: str, keep_latest: int = 7, *, prefix: bool = False) -> int:
+        """Keep only the N most recent assets, delete older files.
+
+        ``prefix=True`` applies the keep-latest budget *per channel* (e.g. all
+        ``sun_*`` channels) instead of treating them as one pool.
+        """
+        if prefix:
+            with self._lock:
+                sources = [
+                    row[0]
+                    for row in self._conn.execute(
+                        "SELECT DISTINCT source FROM assets WHERE source LIKE ?", (f"{source}%",)
+                    ).fetchall()
+                ]
+            return sum(
+                self.prune_assets_for_source(item, keep_latest=keep_latest)
+                for item in sources
+            )
         with self._lock:
             rows = self._conn.execute(
-                "SELECT path FROM assets WHERE source LIKE ? ORDER BY fetched_at DESC",
-                (f"{source}%",),
+                "SELECT path FROM assets WHERE source = ? ORDER BY fetched_at DESC",
+                (source,),
             ).fetchall()
         paths_to_delete = [r[0] for r in rows[keep_latest:]]
         deleted = 0
@@ -716,14 +961,14 @@ class Store:
             try:
                 Path(path).unlink(missing_ok=True)
                 deleted += 1
-            except Exception:
+            except OSError:
                 pass
         if paths_to_delete:
             with self._lock:
                 placeholders = ",".join("?" * len(paths_to_delete))
                 self._conn.execute(
-                    f"DELETE FROM assets WHERE source LIKE ? AND path IN ({placeholders})",
-                    [f"{source}%"] + paths_to_delete,
+                    f"DELETE FROM assets WHERE source = ? AND path IN ({placeholders})",
+                    [source] + paths_to_delete,
                 )
                 self._conn.commit()
         return deleted
@@ -739,15 +984,13 @@ class Store:
             except Exception:
                 pass
         days = int(self.get_setting("retention_days") or 90)
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         try:
             self.prune_snapshots(days)
-            for src in ["swpc", "openmeteo", "aurora", "solarwind", "moon"]:
-                self.prune_observations_before(src, f"{src}:%", cutoff)
-            self.prune_assets_for_source("sun", keep_latest=14)
+            self.prune_observations(days)
+            self.prune_assets_for_source("sun", keep_latest=14, prefix=True)
             self.set_setting("last_prune_at", datetime.now(timezone.utc).isoformat())
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("auto-prune failed: %s", exc)
 
     # ---- notifications ------------------------------------------------
 
@@ -880,6 +1123,9 @@ class Store:
 
     @_locked
     def record_failure(self, source_id: str, now: datetime, error: str, cadence_seconds: int = 3600) -> None:
+        from .redact import redact_secrets
+
+        error = redact_secrets(error) or ""
         row = self._conn.execute(
             "SELECT consecutive_failures, records_ingested, last_success FROM source_state WHERE source_id = ?",
             (source_id,),
@@ -922,6 +1168,16 @@ class Store:
 
 
     # ---- stats / backup ----------------------------------------------
+
+    @_locked
+    def counts(self) -> dict[str, int]:
+        """SQL-only counts (no filesystem walk) for SSE/health payloads."""
+        return {
+            "events": int(self._conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]),
+            "observations": int(self._conn.execute("SELECT COUNT(*) FROM observations").fetchone()[0]),
+            "snapshots": int(self._conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]),
+            "assets": int(self._conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0]),
+        }
 
     @_locked
     def stats(self) -> dict[str, Any]:

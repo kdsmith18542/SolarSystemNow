@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { api } from '../services/api';
 import type { KpPoint, SunSummary } from '../services/api';
+import { useRefreshTick } from '../hooks/useRefreshTick';
 
 function fmtTs(ts: string) {
-  return new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
 }
 
 function Sparkline({ points }: { points: { x: number; y: number }[] }) {
@@ -15,7 +16,6 @@ function Sparkline({ points }: { points: { x: number; y: number }[] }) {
   const yMin = Math.min(...ys), yMax = Math.max(...ys, 1);
   const px = (x: number) => ((x - xMin) / (xMax - xMin || 1)) * (w - 40) + 20;
   const py = (y: number) => h - 20 - ((y - yMin) / (yMax - yMin || 1)) * (h - 40);
-  const d = points.map((p, i) => (i === 0 ? `M ${px(p.x)} ${py(p.y)}` : `L ${px(p.x)} ${py(p.y)}`)).join(' ');
   return (
     <svg width={w} height={h} className="text-blue-500">
       <polyline points={points.map(p => `${px(p.x)},${py(p.y)}`).join(' ')} fill="none" stroke="currentColor" strokeWidth={2} />
@@ -27,6 +27,7 @@ function Sparkline({ points }: { points: { x: number; y: number }[] }) {
 }
 
 export default function SunView() {
+  const tick = useRefreshTick();
   const [kp, setKp] = useState<KpPoint[]>([]);
   const [status, setStatus] = useState<string>('—');
   const [summary, setSummary] = useState<SunSummary | null>(null);
@@ -38,7 +39,7 @@ export default function SunView() {
       setStatus(last ? (last.value >= 4 ? 'Elevated geomagnetic activity' : 'Quiet') : '—');
     });
     api.sunSummary().then(setSummary).catch(() => null);
-  }, []);
+  }, [tick]);
 
   const latest = kp[kp.length - 1];
   const fcMax = summary?.kp_forecast?.length ? Math.max(...summary.kp_forecast.map(p => p.value)) : null;
@@ -109,7 +110,7 @@ export default function SunView() {
         <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-800">
           <h2 className="text-sm text-slate-400 uppercase tracking-wider mb-2">GOES Protons ≥10 MeV</h2>
           <div className="text-4xl font-bold text-fuchsia-400">{summary?.proton_gte10 ? summary.proton_gte10.value.toFixed(1) : '—'}</div>
-          <div className="text-slate-300">pfu · {summary?.proton_gte10 ? (summary.proton_gte10.value >= 10000 ? 'S4' : summary.proton_gte10.value >= 1000 ? 'S3' : summary.proton_gte10.value >= 100 ? 'S2' : summary.proton_gte10.value >= 10 ? 'S1' : 'below S1') : 'S-scale'}</div>
+          <div className="text-slate-300">pfu · {summary?.proton_gte10 ? (summary.proton_gte10.value >= 100000 ? 'S5' : summary.proton_gte10.value >= 10000 ? 'S4' : summary.proton_gte10.value >= 1000 ? 'S3' : summary.proton_gte10.value >= 100 ? 'S2' : summary.proton_gte10.value >= 10 ? 'S1' : 'below S1') : 'S-scale'}</div>
           <div className="text-xs text-slate-500">
             ≥50 MeV {summary?.proton_gte50 ? summary.proton_gte50.value.toFixed(2) : '—'} · ≥100 MeV {summary?.proton_gte100 ? summary.proton_gte100.value.toFixed(2) : '—'} · {summary?.proton_gte10 ? fmtTs(summary.proton_gte10.ts) : 'GOES'}
           </div>
@@ -132,12 +133,13 @@ export default function SunView() {
 }
 
 function WindCard() {
+  const tick = useRefreshTick();
   const [wind, setWind] = useState<{ value: number; ts: string } | null>(null);
   const [dens, setDens] = useState<{ value: number; ts: string } | null>(null);
   useEffect(() => {
     api.obs('swpc', 'swpc:solarwind_speed', 1).then(r => { if (r.points[0]) setWind({ value: r.points[0].value, ts: r.points[0].ts }); }).catch(() => null);
     api.obs('swpc', 'swpc:solarwind_density', 1).then(r => { if (r.points[0]) setDens({ value: r.points[0].value, ts: r.points[0].ts }); }).catch(() => null);
-  }, []);
+  }, [tick]);
   return (
     <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-800">
       <h2 className="text-sm text-slate-400 uppercase tracking-wider mb-2">Solar wind (RTSW)</h2>
@@ -158,10 +160,11 @@ const CHANNEL_LABELS: Record<string, string> = {
 };
 
 function ImageryWall() {
+  const tick = useRefreshTick();
   const [channels, setChannels] = useState<Record<string, string>>({});
   useEffect(() => {
     api.sunImages().then((r) => setChannels(r.channels)).catch(() => null);
-  }, []);
+  }, [tick]);
   const ids = Object.keys(CHANNEL_LABELS).filter((id) => channels[id]);
   if (!ids.length) return null;
   return (
@@ -182,16 +185,17 @@ function ImageryWall() {
 }
 
 function CmeWatchCard() {
-  const [watch, setWatch] = useState<{ available: boolean; cme_speed_km_s?: number; flare_class?: string; result?: { arrival_window_low_hours: number; arrival_window_high_hours: number; storm_proxy: string } } | null>(null);
+  const tick = useRefreshTick();
+  const [watch, setWatch] = useState<{ available: boolean; cme_speed_km_s?: number; flare_class?: string; cme_age_hours?: number; reason?: string; result?: { arrival_window_low_hours: number; arrival_window_high_hours: number; storm_proxy: string } } | null>(null);
   useEffect(() => {
     api.cmeWatch().then(setWatch).catch(() => null);
-  }, []);
+  }, [tick]);
   if (!watch?.available || !watch.result) {
     return (
       <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-800">
         <h2 className="text-sm text-slate-400 uppercase tracking-wider mb-2">CME Arrival (SIM)</h2>
-        <div className="text-slate-300">No CME in window —</div>
-        <div className="text-xs text-slate-500">Ballistic model · runs when DONKI reports a CME</div>
+        <div className="text-slate-300">{watch?.reason ?? 'No CME in window —'}</div>
+        <div className="text-xs text-slate-500">Ballistic model · requires a directed CME with measured speed + GOES flux</div>
       </div>
     );
   }

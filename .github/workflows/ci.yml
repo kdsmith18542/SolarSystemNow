@@ -50,6 +50,8 @@ jobs:
           cache-dependency-path: ssnow_web/package-lock.json
       - name: Install dependencies
         run: npm ci
+      - name: Typecheck frontend
+        run: npm run typecheck
       - name: Build frontend bundle
         run: npm run build
 
@@ -77,7 +79,7 @@ jobs:
       - name: Build frontend bundle
         working-directory: ssnow_web
         run: npm run build
-      - name: Playwright smoke tests (system Chrome)
+      - name: Playwright browser tests (system Chrome)
         working-directory: ssnow_web
         run: npx playwright test
       - uses: actions/upload-artifact@v4

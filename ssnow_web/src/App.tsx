@@ -45,8 +45,8 @@ export default function App() {
 
 function DashboardShell() {
   const [tab, setTab] = useState('dashboard');
-  const [refreshKey, setRefreshKey] = useState(0);
   const [live, setLive] = useState(false);
+  const triggerRefresh = () => window.dispatchEvent(new Event('ssnow:refresh'));
 
   // SSE live stream: server pushes ingest_complete + heartbeat.
   // EventSource reconnects natively; any successful message = connected.
@@ -57,7 +57,7 @@ function DashboardShell() {
     src.onmessage = (ev) => {
       setLive(true);
       try {
-        if (JSON.parse(ev.data)?.type === 'ingest_complete') setRefreshKey((k) => k + 1);
+        if (JSON.parse(ev.data)?.type === 'ingest_complete') triggerRefresh();
       } catch { /* heartbeat / non-JSON: ignore */ }
     };
     src.onerror = () => setLive(false);
@@ -109,14 +109,14 @@ function DashboardShell() {
             </span>
             <button
               className="px-3 py-1 text-xs bg-slate-800 hover:bg-slate-700 active:bg-slate-600 rounded text-slate-200 border border-slate-700 cursor-pointer"
-              onClick={() => setRefreshKey((k) => k + 1)}
+              onClick={triggerRefresh}
             >
               Refresh
             </button>
           </div>
         </header>
         <div className="flex-1 overflow-auto p-6">
-          {VIEWS[tab] ? React.createElement(VIEWS[tab] as any, { key: `${tab}-${refreshKey}`, refreshKey }) : <div>No view</div>}
+          {VIEWS[tab] ? React.createElement(VIEWS[tab] as any, { key: tab }) : <div>No view</div>}
         </div>
       </main>
     </div>

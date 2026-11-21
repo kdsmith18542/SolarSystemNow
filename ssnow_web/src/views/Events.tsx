@@ -1,17 +1,20 @@
 import { useEffect, useState } from 'react';
 import { api } from '../services/api';
 import type { Event } from '../services/api';
+import { useRefreshTick } from '../hooks/useRefreshTick';
 
 function fmt(ts: string | null) {
   if (!ts) return '—';
-  return new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
 }
 
 const CATEGORIES = ['All','earthquake','volcano','wildfire','storm','flood','space_weather_alert','geomagnetic_storm','cme','solar_flare','neo','fireball','severe_outlook','weather_alert','other'];
 
 export default function Events() {
+  const tick = useRefreshTick();
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [cat, setCat] = useState('All');
   const [days, setDays] = useState(7);
   const [mag, setMag] = useState(0);
@@ -45,18 +48,22 @@ export default function Events() {
 
   const load = async () => {
     setLoading(true);
+    setError(null);
     try {
       const end = new Date().toISOString();
       const start = new Date(Date.now() - days * 86400000).toISOString();
       const cats = cat === 'All' ? undefined : cat;
       const r = await api.events({ start, end, categories: cats, min_magnitude: mag || undefined, limit: 500 });
       setEvents(r.events);
+    } catch (e) {
+      setEvents([]);
+      setError(e instanceof Error ? e.message : 'Could not load events');
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => { load(); }, [cat, days, mag]);
+  useEffect(() => { load(); }, [cat, days, mag, tick]);
 
   return (
     <div className="space-y-4">
@@ -70,6 +77,7 @@ export default function Events() {
         <button onClick={() => api.ingest().then(() => load())} className="bg-slate-700 hover:bg-slate-600 px-4 py-1.5 rounded text-sm font-medium text-slate-200">Ingest</button>
         <button onClick={exportCsv} className="bg-slate-700 hover:bg-slate-600 px-4 py-1.5 rounded text-sm font-medium text-slate-200">Export CSV</button>
         {loading && <span className="ml-2 text-xs text-slate-400 animate-pulse">loading…</span>}
+        {error && <span className="ml-2 text-xs text-red-400">{error}</span>}
       </div>
       <div className="bg-slate-900/50 rounded-xl border border-slate-800 overflow-hidden">
         <div className="overflow-x-auto">
@@ -116,10 +124,14 @@ export default function Events() {
               <div><span className="text-slate-500 block">Category</span><span className="text-slate-300">{selected.category}</span></div>
               <div><span className="text-slate-500 block">Occurred</span><span className="text-slate-300">{fmt(selected.occurred_at)}</span></div>
               <div><span className="text-slate-500 block">Magnitude</span><span className="text-slate-300">{selected.magnitude != null ? selected.magnitude.toFixed(1) + ' ' + (selected.magnitude_unit || '') : '—'}</span></div>
-              <div colSpan={2}><span className="text-slate-500 block">Description</span><span className="text-slate-300 whitespace-pre-line">{selected.description || '—'}</span></div>
-              <div colSpan={2}><span className="text-slate-500 block">URL</span><a href={selected.url || '#'} target="_blank" rel="noopener noreferrer" className="text-blue-400 underline">{selected.url || '—'}</a></div>
+              <div className="col-span-2"><span className="text-slate-500 block">Description</span><span className="text-slate-300 whitespace-pre-line">{selected.description || '—'}</span></div>
+              <div className="col-span-2"><span className="text-slate-500 block">URL</span>
+                {selected.url && /^https?:\/\//i.test(selected.url)
+                  ? <a href={selected.url} target="_blank" rel="noopener noreferrer" className="text-blue-400 underline">{selected.url}</a>
+                  : <span className="text-slate-300">—</span>}
+              </div>
               {Object.keys(selected.extra).length > 0 && (
-                <div colSpan={2}><span className="text-slate-500 block">Extra</span><pre className="text-xs text-slate-400 bg-slate-950 p-3 rounded overflow-auto whitespace-pre-wrap">{JSON.stringify(selected.extra, null, 2)}</pre></div>
+                <div className="col-span-2"><span className="text-slate-500 block">Extra</span><pre className="text-xs text-slate-400 bg-slate-950 p-3 rounded overflow-auto whitespace-pre-wrap">{JSON.stringify(selected.extra, null, 2)}</pre></div>
               )}
             </div>
           </div>
@@ -132,12 +144,13 @@ export default function Events() {
 function EventBadges({ ev }: { ev: Event }) {
   const ex = (ev.extra ?? {}) as Record<string, any>;
   const badges: Array<{ text: string; color: string }> = [];
+  if (ex.time_estimated) badges.push({ text: 'Estimated time — upstream timestamp missing', color: '#fbbf24' });
   if (ex.tsunami === 1 || ex.tsunami === true || ex.tsunami === '1') badges.push({ text: '🌊 TSUNAMI FLAG — check USGS/PTWC', color: '#22d3ee' });
   if (ex.alert) badges.push({ text: `PAGER alert: ${ex.alert}`, color: '#f87171' });
   if (ex.felt) badges.push({ text: `Felt reports: ${ex.felt}`, color: '#fbbf24' });
   if (ex.severity) badges.push({ text: `NWS severity: ${ex.severity} · ${ex.certainty ?? ''}/${ex.urgency ?? ''}`, color: '#fb923c' });
   if (ex.expires) badges.push({ text: `Expires: ${ex.expires}`, color: '#94a3b8' });
-  if (ex.hazardous || ex.hazardous_candidate) badges.push({ text: `⚠️ POTENTIALLY HAZARDOUS ${ex.kind ?? 'asteroid'} — ${ex.dist_lunar ?? ex.miss_lunar ?? '?'} LD`, color: '#f87171' });
+  if ((ex.hazardous || ex.hazardous_candidate) && !ex.is_comet) badges.push({ text: `⚠️ PHA / PHA CANDIDATE ${ex.kind ?? 'asteroid'} — ${ex.dist_lunar ?? ex.miss_lunar ?? '?'} LD`, color: '#f87171' });
   if (ex.is_comet) badges.push({ text: '☄️ Comet close approach (JPL CAD)', color: '#22d3ee' });
   if (ex.kind === 'sentry') badges.push({ text: `🎯 Sentry impact watch: PS ${ex.ps_cum} · IP ${ex.impact_probability} · ${ex.year_range ?? ''}`, color: '#f87171' });
   if (ex.kind === 'lsr') badges.push({ text: `⛈️ Storm report: ${ex.typetext} via ${ex.wfo} (${ex.source})`, color: '#60a5fa' });

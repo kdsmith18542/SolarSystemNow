@@ -52,12 +52,17 @@ class ThreatDial(QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.level = 0
-        self.subtitle = "—"
+        self.level = -1
+        self.subtitle = "no data"
         self.setMinimumSize(190, 130)
 
     def set_level(self, level: int, subtitle: str = "") -> None:
         self.level = max(0, min(int(level), 3))
+        self.subtitle = subtitle
+        self.update()
+
+    def set_unknown(self, subtitle: str = "no data") -> None:
+        self.level = -1
         self.subtitle = subtitle
         self.update()
 
@@ -75,15 +80,17 @@ class ThreatDial(QWidget):
             int(cx - radius), int(cy - radius), int(radius * 2), int(radius * 2),
             int(start_deg * 16), int(-span_deg * 16),
         )
-        # Filled portion up to current level
-        frac = (self.level + 1) / 4.0
-        color = self.COLORS[self.level]
-        pen = QPen(QColor(color), 11, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
-        painter.setPen(pen)
-        painter.drawArc(
-            int(cx - radius), int(cy - radius), int(radius * 2), int(radius * 2),
-            int(start_deg * 16), int(-span_deg * frac * 16),
-        )
+        # Filled portion up to current level (no fill when data is unknown).
+        known = self.level >= 0
+        frac = (self.level + 1) / 4.0 if known else 0.0
+        color = self.COLORS[self.level] if known else theme.TEXT_FAINT
+        if known:
+            pen = QPen(QColor(color), 11, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+            painter.setPen(pen)
+            painter.drawArc(
+                int(cx - radius), int(cy - radius), int(radius * 2), int(radius * 2),
+                int(start_deg * 16), int(-span_deg * frac * 16),
+            )
         # Level ticks
         for i in range(4):
             ang = math.radians(start_deg - span_deg * (i + 0.5) / 4.0)
@@ -99,7 +106,8 @@ class ThreatDial(QWidget):
         painter.setPen(QPen(QColor(color)))
         painter.drawText(
             int(cx - radius), int(cy - radius * 0.62), int(radius * 2), 30,
-            Qt.AlignmentFlag.AlignCenter, self.LEVELS[self.level],
+            Qt.AlignmentFlag.AlignCenter,
+            self.LEVELS[self.level] if known else "NO DATA",
         )
         font.setPixelSize(10)
         font.setBold(False)
@@ -107,7 +115,7 @@ class ThreatDial(QWidget):
         painter.setPen(QPen(QColor(theme.TEXT_FAINT)))
         painter.drawText(
             int(cx - radius), int(cy - radius * 0.62) + 30, int(radius * 2), 18,
-            Qt.AlignmentFlag.AlignCenter, f"{self.level + 1} / 4",
+            Qt.AlignmentFlag.AlignCenter, f"{self.level + 1} / 4" if known else "waiting for data",
         )
         if self.subtitle:
             painter.drawText(
@@ -237,44 +245,86 @@ class NowView(BaseView):
 
         # --- Gather inputs once -------------------------------------------
         quakes = self.store.query_events(categories=["earthquake"], limit=1)
-        kp = self.store.latest_observations("swpc", "swpc:kp")
-        current_kp = kp[0].value if kp else 0.0
-        locations = self.store.get_setting("locations") or []
-        loc = locations[0] if locations else self.store.get_setting("location") or {"lat": 51.5074, "lon": -0.1278, "name": "London"}
-        lat = abs(float(loc.get("lat", 51.5)))
-        loc_name = loc.get("name", "Local")
-        moon_state = self.store.get_setting("moon_state") or {}
-        xray = self.store.get_series("swpc", "swpc:xray_flux", limit=1)
-        wind = self.store.get_series("swpc", "swpc:solarwind_speed", limit=1)
-        bz_s = self.store.get_series("swpc", "swpc:imf_bz_gsm", limit=1)
-        proton = self.store.get_series("swpc", "swpc:proton_flux_gte10MeV", limit=1)
-        dst_s = self.store.get_series("swpc", "swpc:dst", limit=1)
-        flare_class = xray[-1].extra_json.get("class", "A") if xray else "A"
-        wind_speed = wind[-1].value if wind else 350.0
-        bz = bz_s[-1].value if bz_s else 0.0
-        pflux = proton[-1].value if proton else 0.0
-        dst = dst_s[-1].value if dst_s else 0.0
-
-        # --- Threat (4-level composite) -----------------------------------
-        if flare_class.startswith("X") or current_kp >= 7 or pflux >= 1000 or dst <= -100:
-            level, threat = 3, "STORM"
-        elif flare_class.startswith("M") or current_kp >= 5 or wind_speed >= 600 or bz <= -10 or pflux >= 10:
-            level, threat = 2, "ELEVATED"
-        elif flare_class.startswith("C") or current_kp >= 4 or wind_speed >= 450 or bz < 0:
-            level, threat = 1, "UNSETTLED"
-        else:
-            level, threat = 0, "QUIET"
-        color = ThreatDial.COLORS[level]
-        self.dial.set_level(level, f"Kp {current_kp:.1f} · Bz {bz:.1f} nT")
-        cards["Solar Activity Threat"].set_value(f"{threat} ({level + 1}/4)", color)
-        cards["Solar Activity Threat"].set_meta(
-            f"Flare {flare_class}-class · Wind {wind_speed:.0f} km/s · Bz {bz:.1f} nT · Kp {current_kp:.1f}"
+        kp_obs = self.store.get_latest_observation("swpc", "swpc:kp")
+        current_kp = kp_obs.value if kp_obs else None
+        locations = [loc for loc in (self.store.get_setting("locations") or []) if isinstance(loc, dict)]
+        legacy_loc = self.store.get_setting("location")
+        loc = (
+            locations[0]
+            if locations
+            else (legacy_loc if isinstance(legacy_loc, dict) else {"lat": 51.5074, "lon": -0.1278, "name": "London"})
         )
-        cards["Solar Activity Threat"].set_accent(color)
+        try:
+            lat = abs(float(loc.get("lat", 51.5)))
+        except (TypeError, ValueError):
+            lat = 51.5
+        loc_name = loc.get("name") or "Local"
+        moon_state = self.store.get_setting("moon_state") or {}
+        xray = self.store.get_latest_observation("swpc", "swpc:xray_flux")
+        wind = self.store.get_latest_observation("swpc", "swpc:solarwind_speed")
+        bz_s = self.store.get_latest_observation("swpc", "swpc:imf_bz_gsm")
+        proton = self.store.get_latest_observation("swpc", "swpc:proton_flux_gte10MeV")
+        dst_s = self.store.get_latest_observation("swpc", "swpc:dst")
+        flare_class = (xray.extra_json.get("class") if xray else None)
+        wind_speed = wind.value if wind else None
+        bz = bz_s.value if bz_s else None
+        pflux = proton.value if proton else None
+        dst = dst_s.value if dst_s else None
+
+        # --- Threat (4-level composite, only from real inputs) ------------
+        has_inputs = any(v is not None for v in (current_kp, flare_class, wind_speed, bz, pflux, dst))
+        level = 0
+        if flare_class and flare_class.startswith("X"):
+            level = 3
+        elif flare_class and flare_class.startswith("M"):
+            level = max(level, 2)
+        elif flare_class and flare_class.startswith("C"):
+            level = max(level, 1)
+        if current_kp is not None:
+            level = max(level, 3 if current_kp >= 7 else 2 if current_kp >= 5 else 1 if current_kp >= 4 else 0)
+        if wind_speed is not None:
+            level = max(level, 2 if wind_speed >= 600 else 1 if wind_speed >= 450 else 0)
+        if bz is not None:
+            level = max(level, 2 if bz <= -10 else 1 if bz < 0 else 0)
+        if pflux is not None:
+            level = max(level, 3 if pflux >= 1000 else 2 if pflux >= 10 else 0)
+        if dst is not None and dst <= -100:
+            level = 3
+        threat = ThreatDial.LEVELS[level]
+        threat_parts = []
+        if flare_class:
+            threat_parts.append(f"Flare {flare_class}-class")
+        if wind_speed is not None:
+            threat_parts.append(f"Wind {wind_speed:.0f} km/s")
+        if bz is not None:
+            threat_parts.append(f"Bz {bz:.1f} nT")
+        if current_kp is not None:
+            threat_parts.append(f"Kp {current_kp:.1f}")
+        if pflux is not None:
+            threat_parts.append(f"p+ {pflux:.1f} pfu")
+        if dst is not None:
+            threat_parts.append(f"Dst {dst:.0f} nT")
+        if not has_inputs:
+            self.dial.set_unknown("waiting for Kp / X-ray / wind")
+            cards["Solar Activity Threat"].set_value("NO DATA", theme.TEXT_FAINT)
+            cards["Solar Activity Threat"].set_meta("No space-weather observations yet")
+            cards["Solar Activity Threat"].set_accent(None)
+        else:
+            color = ThreatDial.COLORS[level]
+            dial_sub = " · ".join(
+                part for part in (
+                    f"Kp {current_kp:.1f}" if current_kp is not None else "",
+                    f"Bz {bz:.1f} nT" if bz is not None else "",
+                ) if part
+            ) or "partial data"
+            self.dial.set_level(level, dial_sub)
+            cards["Solar Activity Threat"].set_value(f"{threat} ({level + 1}/4)", color)
+            cards["Solar Activity Threat"].set_meta(" · ".join(threat_parts))
+            cards["Solar Activity Threat"].set_accent(color)
 
         # --- Kp ------------------------------------------------------------
-        if kp:
-            obs = kp[0]
+        if kp_obs:
+            obs = kp_obs
             kp_color = theme.DANGER if obs.value >= 6 else (theme.WARN if obs.value >= 4 else theme.OK)
             cards["Space Weather (Kp)"].set_value(f"{obs.value:.1f}", kp_color)
             cards["Space Weather (Kp)"].set_meta(f"Planetary K-index · {fmt_ts(obs.ts)} · NOAA SWPC")
@@ -298,26 +348,32 @@ class NowView(BaseView):
         else:
             kp_threshold = 8
 
-        if current_kp >= kp_threshold:
-            verdict, aurora_color = "Look outside now", theme.OK
-        elif current_kp >= kp_threshold - 1.0 and kp_threshold > 1:
-            verdict, aurora_color = "Possible on horizon", theme.WARN
-        else:
-            verdict, aurora_color = "Unlikely tonight", theme.TEXT_DIM
-
-        cards["Aurora Tonight"].set_value(verdict, aurora_color)
-        aurora_max = self.store.get_series("aurora", "aurora:intensity_max", limit=1)
-        aurora_oval = self.store.get_series("aurora", "aurora:oval_equatorward_deg", limit=1)
+        aurora_max = self.store.get_latest_observation("aurora", "aurora:intensity_max")
+        aurora_oval = self.store.get_latest_observation("aurora", "aurora:oval_equatorward_deg")
         ovation = ""
         if aurora_max or aurora_oval:
             parts = []
             if aurora_max:
-                parts.append(f"OVATION max {aurora_max[-1].value:.0f}")
+                parts.append(f"OVATION max {aurora_max.value:.0f}")
             if aurora_oval:
-                parts.append(f"oval edge {aurora_oval[-1].value:.1f}°")
+                parts.append(f"oval edge {aurora_oval.value:.1f}°")
             ovation = f" · {' · '.join(parts)}"
-        cards["Aurora Tonight"].set_meta(f"{loc_name} ({lat:.1f}°) needs Kp ≥ {kp_threshold} · now {current_kp:.1f}{ovation}")
-        cards["Aurora Tonight"].set_accent(aurora_color if aurora_color != theme.TEXT_DIM else None)
+        if current_kp is None:
+            cards["Aurora Tonight"].set_value("—", theme.TEXT_FAINT)
+            cards["Aurora Tonight"].set_meta(f"{loc_name} ({lat:.1f}°) · no Kp data yet{ovation}")
+            cards["Aurora Tonight"].set_accent(None)
+        else:
+            if current_kp >= kp_threshold:
+                verdict, aurora_color = "Look outside now", theme.OK
+            elif current_kp >= kp_threshold - 1.0 and kp_threshold > 1:
+                verdict, aurora_color = "Possible on horizon", theme.WARN
+            else:
+                verdict, aurora_color = "Unlikely tonight", theme.TEXT_DIM
+            cards["Aurora Tonight"].set_value(verdict, aurora_color)
+            cards["Aurora Tonight"].set_meta(
+                f"{loc_name} ({lat:.1f}°) needs Kp ≥ {kp_threshold} · now {current_kp:.1f}{ovation}"
+            )
+            cards["Aurora Tonight"].set_accent(aurora_color if aurora_color != theme.TEXT_DIM else None)
 
         # --- Earthquake ----------------------------------------------------
         if quakes:
@@ -338,9 +394,9 @@ class NowView(BaseView):
             cards["Moon Phase"].set_value(
                 f"{illum * 100:.0f}%" if illum is not None else "—", theme.VIOLET
             )
-            cards["Moon Phase"].set_meta(
-                f"{moon_state.get('phase_name', '—')} · {moon_state.get('distance_km', 0):,.0f} km"
-            )
+            distance = moon_state.get("distance_km")
+            distance_text = f"{float(distance):,.0f} km" if distance is not None else "distance —"
+            cards["Moon Phase"].set_meta(f"{moon_state.get('phase_name', '—')} · {distance_text}")
             cards["Moon Phase"].set_accent(theme.VIOLET)
         else:
             cards["Moon Phase"].set_value("—", theme.TEXT_FAINT)
@@ -348,19 +404,18 @@ class NowView(BaseView):
             cards["Moon Phase"].set_accent(None)
 
         # --- Weather -------------------------------------------------------
-        if locations:
-            primary_loc = locations[0]
+        primary_loc = loc if isinstance(loc, dict) else None
+        if primary_loc:
             key = primary_loc.get("key") or f"{primary_loc.get('lat')},{primary_loc.get('lon')}"
-            temps = self.store.latest_observations("openmeteo", f"weather:{key}:temperature_2m")
-            if temps:
-                temp = temps[0]
+            temp = self.store.get_latest_observation("openmeteo", f"weather:{key}:temperature_2m")
+            if temp:
                 cards["Local Weather"].set_value(f"{temp.value:.1f}°C", theme.ACCENT)
-                aqi = self.store.latest_observations("openmeteo", f"air:{key}:us_aqi")
-                aqi_text = f" · AQI {aqi[0].value:.0f}" if aqi else ""
-                marine = self.store.latest_observations("openmeteo", f"marine:{key}:wave_height")
-                marine_text = f" · waves {marine[0].value:.1f} m" if marine else ""
-                wind = self.store.latest_observations("openmeteo", f"weather:{key}:wind_speed_10m")
-                wind_text = f" · wind {wind[0].value:.0f} km/h" if wind else ""
+                aqi = self.store.get_latest_observation("openmeteo", f"air:{key}:us_aqi")
+                aqi_text = f" · AQI {aqi.value:.0f}" if aqi else ""
+                marine = self.store.get_latest_observation("openmeteo", f"marine:{key}:wave_height")
+                marine_text = f" · waves {marine.value:.1f} m" if marine else ""
+                wind_obs = self.store.get_latest_observation("openmeteo", f"weather:{key}:wind_speed_10m")
+                wind_text = f" · wind {wind_obs.value:.0f} km/h" if wind_obs else ""
                 cards["Local Weather"].set_meta(f"{primary_loc.get('name', 'Location')} · {fmt_ts(temp.ts)}{aqi_text}{wind_text}{marine_text}")
                 cards["Local Weather"].set_accent(theme.ACCENT)
             else:
@@ -372,76 +427,92 @@ class NowView(BaseView):
             cards["Local Weather"].set_meta("Add a location in Settings")
             cards["Local Weather"].set_accent(None)
 
-        # --- Next close approach -------------------------------------------
+        # --- Next close approach (future only) ------------------------------
         try:
-            neos = self.store.query_events(categories=["neo"], limit=100)
-            best = None
+            now_dt = datetime.now(timezone.utc)
+            neos = self.store.query_events(categories=["neo"], limit=500)
+            upcoming = []
             for n in neos:
                 ex = n.extra_json or {}
-                try:
-                    ld = ex.get("dist_lunar")
-                    ld = float(ld) if ld not in (None, "") else float(ex.get("miss_lunar"))
-                except (TypeError, ValueError):
+                if (ex.get("kind") or "") == "sentry":
                     continue
-                if best is None or ld < best[0]:
-                    best = (ld, n)
-            if best:
-                ld, n = best
+                if n.occurred_at is None or n.occurred_at < now_dt:
+                    continue
+                try:
+                    raw = ex.get("dist_lunar")
+                    ld = float(raw) if raw not in (None, "") else float(ex.get("miss_lunar"))
+                except (TypeError, ValueError):
+                    ld = None
+                upcoming.append((n.occurred_at, n, ld))
+            if upcoming:
+                _, n, ld = min(upcoming, key=lambda item: item[0])
                 ex = n.extra_json or {}
-                hazardous = bool(ex.get("hazardous") or ex.get("hazardous_candidate"))
+                hazardous = bool(ex.get("hazardous") or ex.get("hazardous_candidate")) and not ex.get("is_comet")
                 name = ex.get("fullname") or ex.get("des") or n.title
                 cards["Next Close Approach"].set_value(
-                    f"{ld:.2f} LD", theme.DANGER if hazardous or ld < 1 else theme.LIME
+                    f"{ld:.2f} LD" if ld is not None else "—",
+                    theme.DANGER if hazardous or (ld is not None and ld < 1) else theme.LIME,
                 )
-                kind = (ex.get("kind") or "asteroid")
+                kind = ex.get("kind") or ("comet" if ex.get("is_comet") else "asteroid")
                 cards["Next Close Approach"].set_meta(f"{str(name)[:48]} · {kind} · {fmt_ts(n.occurred_at)}")
                 cards["Next Close Approach"].set_accent(theme.DANGER if hazardous else theme.LIME)
             else:
                 cards["Next Close Approach"].set_value("—", theme.TEXT_FAINT)
-                cards["Next Close Approach"].set_meta("No close approaches in window")
+                cards["Next Close Approach"].set_meta("No upcoming close approaches")
                 cards["Next Close Approach"].set_accent(None)
         except Exception:
             cards["Next Close Approach"].set_value("—", theme.TEXT_FAINT)
-            cards["Next Close Approach"].set_meta("No close approaches in window")
+            cards["Next Close Approach"].set_meta("No upcoming close approaches")
             cards["Next Close Approach"].set_accent(None)
 
-        # --- Latest CME (+ labelled SIM arrival) ----------------------------
+        # --- Latest CME (+ labelled SIM only with measured inputs) ---------
         try:
-            cmes = self.store.query_events(categories=["cme"], limit=5)
+            from ssnow_core.sim import get_scenario
+            from ssnow_core.sim.flare import flare_class_from_flux
+            from ssnow_core.sources.donki import is_earth_directed
 
-            def _score(e):
-                exx = e.extra_json or {}
-                try:
-                    sp = float(exx.get("speed") or 0)
-                except (TypeError, ValueError):
-                    sp = 0.0
-                directed = exx.get("type") in ("S", "C") or (exx.get("half_angle") or 0) >= 60
-                return (directed, sp)
-
+            cmes = self.store.query_events(categories=["cme"], limit=20)
             if cmes:
-                c = max(cmes, key=_score)
+                c = cmes[0]  # query_events is newest-first
                 ex = c.extra_json or {}
-                speed = ex.get("speed")
-                ctype = ex.get("type", "?")
-                directed = ctype in ("S", "C") or (ex.get("half_angle") or 0) >= 60
+                try:
+                    speed_val = float(ex.get("speed")) if ex.get("speed") not in (None, "") else None
+                except (TypeError, ValueError):
+                    speed_val = None
+                directed = is_earth_directed(ex)
+                ctype = ex.get("type") or "?"
                 cards["Latest CME"].set_value(
-                    f"{float(speed):.0f} km/s" if speed else "—",
+                    f"{speed_val:.0f} km/s" if speed_val is not None else "—",
                     theme.PINK if directed else theme.TEXT_DIM,
                 )
-                meta = f"type {ctype} · {'Earth-directed' if directed else 'limb/backside'} · {fmt_ts(c.occurred_at)}"
-                try:
-                    from ssnow_core.sim import get_scenario
-
-                    scenario = get_scenario("flare_arrival")
-                    res = scenario().run({
-                        "cme_speed_km_s": float(speed or 500.0),
-                        "distance_au": 1.0,
-                        "flare_class": flare_class if flare_class in ("A", "B", "C", "M", "X") else "C",
-                        "flare_subclass": 5.0,
-                    })
-                    meta += f" · SIM ~{res['arrival_window_low_hours']:.0f}–{res['arrival_window_high_hours']:.0f}h"
-                except Exception:
-                    pass
+                meta = f"type {ctype} · {'Earth-directed' if directed else 'not Earth-directed'} · {fmt_ts(c.occurred_at)}"
+                flare = flare_class_from_flux(float(xray.value)) if xray is not None else None
+                if directed and speed_val is not None and flare is not None:
+                    try:
+                        age_hours = 0.0
+                        if c.occurred_at is not None:
+                            age_hours = max(0.0, (now_dt - c.occurred_at).total_seconds() / 3600.0)
+                        scenario = get_scenario("flare_arrival")
+                        res = scenario().run({
+                            "cme_speed_km_s": speed_val,
+                            "distance_au": 1.0,
+                            "flare_class": flare[0],
+                            "flare_subclass": flare[1],
+                            "elapsed_hours": min(age_hours, 240.0),
+                        })
+                        total = float(res.get("total_travel_hours") or 0.0)
+                        if total > 0 and age_hours > total * 1.25:
+                            meta += " · SIM window elapsed"
+                        else:
+                            meta += f" · SIM ~{res['arrival_window_low_hours']:.0f}–{res['arrival_window_high_hours']:.0f}h"
+                    except Exception:
+                        meta += " · SIM unavailable"
+                elif speed_val is None:
+                    meta += " · SIM needs measured speed"
+                elif not directed:
+                    meta += " · SIM needs Earth-directed event"
+                else:
+                    meta += " · SIM needs measured X-ray flux"
                 cards["Latest CME"].set_meta(meta)
                 cards["Latest CME"].set_accent(theme.PINK if directed else None)
             else:
@@ -455,12 +526,12 @@ class NowView(BaseView):
 
         # --- Kp trend -------------------------------------------------------
         try:
-            series = self.store.get_series("swpc", "swpc:kp", limit=120)
+            series = self.store.get_recent_series("swpc", "swpc:kp", limit=120)
             if series:
                 pts = [(o.ts.timestamp(), o.value) for o in series]
                 ys = [o.value for o in series]
                 self.trend_spark.set_points(pts, min_value=0, max_value=max(9.0, max(ys)))
             else:
-                self.trend_spark.set_points([(0, 0), (1, 0)], min_value=0, max_value=9)
+                self.trend_spark.set_points([], min_value=0, max_value=9)
         except Exception:
-            self.trend_spark.set_points([(0, 0), (1, 0)], min_value=0, max_value=9)
+            self.trend_spark.set_points([], min_value=0, max_value=9)

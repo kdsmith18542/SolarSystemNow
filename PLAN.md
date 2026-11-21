@@ -34,7 +34,7 @@ The core infrastructure and high-priority reliability fixes have been successful
   - Desktop map color-coded markers and frosted-glass legend.
   - SDO solar imagery served to the web frontend via `/api/sun/image`.
   - Desktop system tray alerts for significant earthquakes ($M \ge 6.0$) and geomagnetic storms ($Kp \ge 5.0$).
-- [x] **Verification**: All 57 unit/adapter/smoke tests pass cleanly (`pytest -v`).
+- [x] **Verification**: All 97 unit/adapter/API/smoke/regression tests pass cleanly (`pytest -v`); Playwright 9/9; Docker image boots with seeded data.
 
 ---
 
@@ -47,7 +47,7 @@ The core infrastructure and high-priority reliability fixes have been successful
 - [x] **Volcanoes**: NASA EONET `volcanoes` category mapped to `volcano` in `ssnow_core/sources/eonet.py:13-25`. Same feed also covers wildfires, storms, floods. Map has dedicated Volcano+Fire layer.
 - [x] **Asteroids**: NeoWs (keyed, 7-day) + JPL SBDB CAD (keyless, 30-day, asteroids AND comets). Stored as `category="neo"` with LD/km/velocity/size/Hazard in `extra_json`.
 - [x] **Comets**: JPL CAD `jpl_cad` adapter (`ssnow_core/sources/cad.py`) — slash-designation detection (`1P/Halley`, `C/...`), kind split, SBDB links. No extra API key required.
-- [x] **Streamer verdict (space + earth + weather for all-in-one tooling)**: CONFIRMED. OBS F11 fullscreen + SSE live stream + composite threat dial (now Bz/proton/Dst-aware) + aurora-localized dial + CME watch + multi-location weather/AQ/marine + tide stations + quake/tsunami/volcano layers covers the full loop a broadcaster needs (space weather → aurora call → local weather → hazard map) without leaving the app. Remaining gap is only CME *arrival countdown* (DONKI provides no arrival timestamp — currently shown as latest-CME watch verdict instead of fabricated countdown, per no-fabrication rule).
+- [x] **Streamer verdict (space + earth + weather for all-in-one tooling)**: CONFIRMED. OBS F11 fullscreen + SSE live stream + composite threat dial (now Bz/proton/Dst-aware) + aurora verdict card + CME watch + multi-location weather/AQ/marine + tide stations + quake/tsunami/volcano layers covers the full loop a broadcaster needs (space weather → aurora call → local weather → hazard map) without leaving the app. Remaining gap is only CME *arrival countdown* (DONKI provides no arrival timestamp — currently shown as latest-CME watch verdict instead of fabricated countdown, per no-fabrication rule).
 
 ## 3. P1 Streamer Gap Ports (2026-11-21 — all free, MIT-keepable, US public domain / NASA)
 
@@ -90,7 +90,7 @@ The core infrastructure and high-priority reliability fixes have been successful
   - Full-screen, distraction-free mission-control display hiding window chrome, sidebar, and control buttons on F11 or Esc.
 - [x] **Space Weather Threat Composite ("DEFCON" dial)**:
   - 4-level composite threat index (`QUIET` / `UNSETTLED` / `ELEVATED` / `STORM`) combining real-time Kp, GOES X-ray flare class, and solar wind velocity.
-- [x] **"Aurora Tonight" Localized Visibility Dial**:
+- [x] **"Aurora Tonight" Localized Visibility Card**:
   - Automatically computes naked-eye visibility verdict (`Look Outside Now!`, `Possible on Horizon`, `Unlikely Tonight`) based on user's geographic latitude threshold vs. real-time Kp.
 - [x] **CME Watch Widget (initial)**:
   - `SunView` shows latest DONKI CME with speed / type / Earth-directed verdict (`S/C-type or wide half-angle`). Full arrival *countdown* is intentionally NOT fabricated — DONKI provides no arrival timestamp. Counts as watch-live, countdown pending upstream data.
@@ -140,7 +140,7 @@ The core infrastructure and high-priority reliability fixes have been successful
 | Task | Priority | Status | Focus |
 |---|---|---|---|
 | **Streamer / OBS Mode (F11)** | P1 | Completed | Desktop UI |
-| **"Aurora Tonight" Dial** | P1 | Completed | NowView Dashboard |
+| **"Aurora Tonight" Card** | P1 | Completed | NowView Dashboard |
 | **Solar Activity Threat Index** | P1 | Completed | NowView Dashboard |
 | **Asteroids & Comets Tracker (NeoView + CAD + /api/neos)** | P1 | Completed | Desktop + Web + Core |
 | **Map Layer Toggles + Event Badges (tsunami/PHA/NWS/CME)** | P1 | Completed | Desktop + Web maps |
@@ -154,8 +154,67 @@ The core infrastructure and high-priority reliability fixes have been successful
 | **CME Arrival Countdown (needs upstream arrival ts)** | P3 | Superseded by SIM watch | SunView |
 | **Settings Location Delete/Reorder** | P2 | Completed | Desktop SettingsView |
 | **SSE Live Stream Endpoint** | P2 | Completed | Web API + Live badge (`/api/stream/live`) |
-| **Full Seed Coverage (33 Sources)** | P2 | Partial (28/33) | Core / Offline Fixtures |
+| **Full Seed Coverage (33 Sources)** | P2 | 28/33 by design (5 need user config/live data) | Core / Offline Fixtures |
 | **Remote Server Mode (RemoteStore + Settings toggle)** | P2 | Completed | Core + Desktop |
 | **Docker Compose Self-Hosting** | P2 | Completed | Packaging |
 | **Events Table Sorting + Map Cross-Linking** | P2 | Completed | Desktop EventsView + MapView + Web |
 | **AppImage Packaging Test** | P3 | Completed | Portable spec + data bundled, frozen GUI boots |
+
+---
+
+## 8. Deep Audit (2026-11-20) — Release Blockers & Fix Log
+
+A full read-only audit was performed across core, desktop, web, packaging, docs and CI.
+**Verdict at audit time: NOT 100%.** `pytest` was 68/68 green and CI/`vite build` passed,
+but the suite missed several release-blocking defects (single-point observation fixtures,
+no traversal/secret/pruning coverage). All P0/P1/P2 findings were fixed by
+2026-11-20 with regression tests (now 97/97); remaining non-blockers are listed
+explicitly.
+
+### P0 — Security & correctness blockers (verified by repro)
+
+- [x] **Path traversal** in `/assets/{path}`: `..%2F` read `/etc/passwd` (`ssnow_web/api.py`). Resolve + contain, 404 on missing, add traversal test.
+- [x] **“Latest” reads returned oldest**: `Store.get_series()` is ASC and `limit=1` was used as “current” in desktop/web/API. Add descending/tail helpers and update every caller; fix `/api/obs?order=desc` past 10k; add multi-timestamp tests.
+- [x] **NASA key leakage**: query-string `api_key` persisted in snapshot URLs, source errors/logs, and exposed via `/api/sources`. Add central redaction, sanitize persisted/served errors, add test.
+- [x] **Stored XSS** in map popups (`MapView.tsx`, desktop map `setHTML`): escape upstream text; add attribution safely.
+- [x] **Asset retention broken**: `assets.source` was `PRIMARY KEY`, so only one row per channel existed while timestamped files accumulated (verified prune deleted 0). Migrate to append-per-fetch, prune N per source, add test.
+
+### P1 — High severity
+
+- [x] **Auto-prune destroyed solar-cycle history** (`swpc:ssn_*`, `f107_*`) and missed `weather:*`/geomag/tides. Per-series retention policies + cycle exemptions; CLI and auto-prune share one method.
+- [x] **SWPC alert IDs collided** on `product_id`; use composite `product_id:issue_datetime`; add duplicate-product test.
+- [x] **Open-Meteo local time mislabeled UTC** (`timezone=auto`); request UTC, parse naive as UTC, fix sunrise/sunset epoch.
+- [x] **CMEs plotted as terrestrial coordinates**: keep heliographic `stlat/stlon` in `extra`, leave `Event.latitude/longitude` null; exclude from Earth map markers.
+- [x] **Missing data rendered as calm/real**: NowView/Dashboard/StreamOverlay defaulted to `QUIET`, `Kp 0`, `350 km/s`, Moon `384400 km`; use explicit `—`/`NO DATA`, never fabricate.
+- [x] **Desktop ingest thread broke after first run** (`deleteLater` left `self._thread` dangling); clear refs, catch worker errors, join on close.
+- [x] **Remote mode**: wrong ingest summary fixed (derives from `sources`), streamer polling throttled to 15 s, UI token updates live, remote settings writes surface errors, and a background prefetch + 5-minute read-through cache keeps view refreshes off the UI-thread HTTP path (startup/SSE/manual ingest warm it in a QThread).
+- [x] **Settings API accepted arbitrary JSON** (verified: `locations: "oops"` → 200, then `/api/weather/now` 500). Validate with Pydantic before writing.
+- [x] **Typecheck broken/not in CI** (`tsc` TS5102 `baseUrl`, no CI step). Fix tsconfig, real type errors, add `typecheck` job.
+- [x] **CME SIM fabricated inputs**: default 500 km/s / C-class, morphology-type direction, no age subtraction; require real speed/direction and honest `available: false`.
+
+### P2 — Medium / polish
+
+- [x] R-tree backfill + stale row cleanup; `find_nearby_event` `julianday` ordering.
+- [x] Normalize all event/observation timestamps to UTC before storage (mixed `-06:00`/`Z` broke ordering).
+- [x] Moon phase signed 0–360° (waning phases were unreachable).
+- [x] CAD diameters marked estimated; PHA-candidate wording; NEO future-only “next approach”; comets not PHAs; SBDB link handler.
+- [x] `RemoteStore` no fabricated `ts=now`/`value=0`; bbox + prefix parity.
+- [x] EONET non-Point geometry and NWS `MultiPolygon` handling.
+- [x] Seed: log/limit failures, don’t mark seeded when nothing succeeded; `/api/sources` includes never-run enabled specs.
+- [x] `/api/settings` GET protected when write token is set; settings write errors surfaced in desktop/web.
+- [x] CORS `*`+credentials, default bind, Docker token posture; API `limit` bounds and 4xx validation.
+- [x] SSE initial payload without filesystem paths/blocking stats; bounded queues.
+- [x] OBS `?bg=transparent` body background; map refresh preserves camera; numeric event sorting; dialog parent/Show-on-Map; event expiry reconciliation.
+- [x] Docker image builds the frontend (multi-stage) instead of trusting committed `static/`; server default port 8123.
+- [x] Docs parity: README/PLAN claims (Now cards, Aurora “dial”, SBDB links, reorder, test count, seed 28/33).
+
+### Known residuals (not release blockers)
+
+- **Seed coverage**: 28/33 by design; Open-Meteo/geomag/tides need user locations/stations, Moon is computed live, DONKI FLR is disabled upstream.
+- **Alert history**: expired NWS/SPC alerts are hidden on maps/dashboard but retained in the Events history by design (audit trail).
+
+### Verification rules (keep green)
+
+- Every fix above lands with a regression test that fails on the old code.
+- `pytest -v` offscreen, `npm run build`, `npx tsc --noEmit`, Playwright and Docker build must pass.
+- No new fabricated values: missing data is `None` → `—`/`NO DATA`, simulation output is labelled.

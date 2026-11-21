@@ -14,6 +14,26 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def is_earth_directed(extra: dict) -> bool:
+    """Conservative direction check from heliographic source longitude.
+
+    DONKI ``type`` (S/C/O) is a CME morphology class, not a direction flag.
+    A wide/halo event or a source near central meridian is treated as
+    potentially Earth-directed; limb/backside events are not.
+    """
+    try:
+        half_angle = float(extra.get("half_angle") or 0.0)
+    except (TypeError, ValueError):
+        half_angle = 0.0
+    if half_angle >= 60.0:
+        return True
+    try:
+        stlon = float(extra.get("stlon"))
+    except (TypeError, ValueError):
+        return False
+    return abs(stlon) <= 45.0
+
+
 def _parse_iso_utc(value: str | None) -> datetime | None:
     if value is None:
         return None
@@ -55,16 +75,21 @@ class CMEAdapter(_DonkiAdapter):
         for item in items:
             analyses = item.get("cmeAnalyses") or []
             best = next((a for a in analyses if a.get("isMostAccurate")), analyses[0] if analyses else {})
-            occurred_at = _parse_iso_utc(item.get("startTime")) or now
+            parsed_time = _parse_iso_utc(item.get("startTime"))
+            occurred_at = parsed_time or now
             extra = {
+                "time_estimated": parsed_time is None,
                 "catalog": item.get("catalog"),
                 "activity_id": item.get("activityID"),
                 "source_location": item.get("sourceLocation"),
                 "active_region": item.get("activeRegionNum"),
                 "speed": best.get("speed"),
                 "half_angle": best.get("halfAngle"),
-                "latitude": best.get("latitude"),
-                "longitude": best.get("longitude"),
+                # DONKI CME lat/lon are heliographic (solar disk), never
+                # terrestrial coordinates. Keep them separate from Event.
+                "stlat": best.get("latitude"),
+                "stlon": best.get("longitude"),
+                "coordinate_frame": "heliographic",
                 "type": best.get("type"),
                 "note": best.get("note"),
                 "link": best.get("link"),
@@ -79,8 +104,8 @@ class CMEAdapter(_DonkiAdapter):
                     description=item.get("note") or "",
                     occurred_at=occurred_at,
                     updated_at=_parse_iso_utc(item.get("submissionTime")),
-                    latitude=float(best.get("latitude")) if best.get("latitude") is not None else None,
-                    longitude=float(best.get("longitude")) if best.get("longitude") is not None else None,
+                    latitude=None,
+                    longitude=None,
                     depth_km=None,
                     magnitude=float(best.get("speed")) if best.get("speed") is not None else None,
                     magnitude_unit="km/s",
@@ -109,8 +134,10 @@ class GSTAdapter(_DonkiAdapter):
                     kp_values.append(float(entry.get("kpIndex")))
                 except (TypeError, ValueError):
                     continue
-            occurred_at = _parse_iso_utc(item.get("startTime")) or now
+            parsed_time = _parse_iso_utc(item.get("startTime"))
+            occurred_at = parsed_time or now
             extra = {
+                "time_estimated": parsed_time is None,
                 "gst_id": item.get("gstID"),
                 "kp_values": kp_values,
                 "link": item.get("link"),
@@ -155,8 +182,10 @@ class FlareAdapter(_DonkiAdapter):
         events: list[Event] = []
         now = now or _utcnow()
         for item in items:
-            occurred_at = _parse_iso_utc(item.get("beginTime")) or now
+            parsed_time = _parse_iso_utc(item.get("beginTime"))
+            occurred_at = parsed_time or now
             extra = {
+                "time_estimated": parsed_time is None,
                 "class_type": item.get("classType"),
                 "source_location": item.get("sourceLocation"),
                 "active_region": item.get("activeRegionNum"),

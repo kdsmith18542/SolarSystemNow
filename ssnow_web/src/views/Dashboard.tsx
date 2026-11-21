@@ -2,11 +2,12 @@ import { useEffect, useState } from 'react';
 import { api } from '../services/api';
 import type { Event, SunSummary } from '../services/api';
 import Sparkline from '../components/Sparkline';
+import { useRefreshTick } from '../hooks/useRefreshTick';
 import MoonDisk from '../components/MoonDisk';
 
 function fmt(ts: string | null) {
   if (!ts) return '—';
-  return new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
 }
 
 const CAT_COLORS: Record<string, string> = {
@@ -29,17 +30,43 @@ const CAT_COLORS: Record<string, string> = {
 const THREATS = ['QUIET', 'UNSETTLED', 'ELEVATED', 'STORM'];
 const THREAT_COLORS = ['#4ade80', '#fbbf24', '#fb923c', '#f87171'];
 
-function threatLevel(s: SunSummary | null): number {
-  if (!s) return 0;
-  const kp = s.kp?.value ?? 0;
-  const bz = s.bz_gsm?.value ?? 0;
-  const proton = s.proton_gte10?.value ?? 0;
-  const dst = s.dst?.value ?? 0;
-  const xr = s.xray?.class ?? '';
-  if (kp >= 7 || proton >= 1000 || dst <= -100 || xr.startsWith('X')) return 3;
-  if (kp >= 5 || bz <= -10 || proton >= 10 || xr.startsWith('M')) return 2;
-  if (kp >= 4 || bz < 0) return 1;
-  return 0;
+function threatLevel(s: SunSummary | null): number | null {
+  if (!s) return null;
+  let level = 0;
+  let known = false;
+  const xr = s.xray?.class;
+  if (xr) {
+    known = true;
+    if (xr.startsWith('X')) level = 3;
+    else if (xr.startsWith('M')) level = Math.max(level, 2);
+    else if (xr.startsWith('C')) level = Math.max(level, 1);
+  }
+  const kp = s.kp?.value;
+  if (kp != null) {
+    known = true;
+    level = Math.max(level, kp >= 7 ? 3 : kp >= 5 ? 2 : kp >= 4 ? 1 : 0);
+  }
+  const bz = s.bz_gsm?.value;
+  if (bz != null) {
+    known = true;
+    level = Math.max(level, bz <= -10 ? 2 : bz < 0 ? 1 : 0);
+  }
+  const proton = s.proton_gte10?.value;
+  if (proton != null) {
+    known = true;
+    level = Math.max(level, proton >= 1000 ? 3 : proton >= 10 ? 2 : 0);
+  }
+  const dst = s.dst?.value;
+  if (dst != null) {
+    known = true;
+    level = Math.max(level, dst <= -100 ? 3 : 0);
+  }
+  const wind = s.wind_speed?.value;
+  if (wind != null) {
+    known = true;
+    level = Math.max(level, wind >= 600 ? 2 : wind >= 450 ? 1 : 0);
+  }
+  return known ? level : null;
 }
 
 function Metric({ label, value, color, sub }: { label: string; value: string; color: string; sub: string }) {
@@ -53,24 +80,35 @@ function Metric({ label, value, color, sub }: { label: string; value: string; co
 }
 
 export default function Dashboard() {
+  const tick = useRefreshTick();
   const [events, setEvents] = useState<Event[]>([]);
   const [summary, setSummary] = useState<SunSummary | null>(null);
   const [kpSeries, setKpSeries] = useState<number[]>([]);
-  const [moon, setMoon] = useState<{ phase_name: string | null; illumination: number | null }>(null);
+  const [moon, setMoon] = useState<{ phase_name: string | null; illumination: number | null } | null>(null);
   const [tide, setTide] = useState<{ value: number; ts: string; station: string } | null>(null);
   const [neo, setNeo] = useState<any>(null);
   const [cme, setCme] = useState<any>(null);
   const [wx, setWx] = useState<any[]>([]);
 
   useEffect(() => {
-    api.events({ limit: 60 }).then(({ events: evs }) => setEvents(evs)).catch(() => null);
+    api.events({ limit: 60, end: new Date().toISOString() }).then(({ events: evs }) => {
+      const now = Date.now();
+      setEvents(evs.filter((e) => {
+        const ex = (e.extra ?? {}) as any;
+        return !['expires', 'expire_iso'].some((key) => ex[key] && Date.parse(ex[key]) < now);
+      }));
+    }).catch(() => null);
     api.kp(90).then(r => setKpSeries(r.points.map(p => p.value))).catch(() => null);
     api.sunSummary().then(setSummary).catch(() => null);
     api.moon().then(m => setMoon({ phase_name: m.phase_name, illumination: m.illumination })).catch(() => null);
-    api.neos(50).then(r => {
-      const withDist = r.neos.filter(n => n.dist_lunar != null);
-      withDist.sort((a, b) => (a.dist_lunar as number) - (b.dist_lunar as number));
-      setNeo(withDist[0] ?? null);
+    api.neos(200).then(r => {
+      const now = Date.now();
+      const upcoming = r.neos.filter(n =>
+        n.dist_lunar != null && n.approach_at != null && n.kind !== 'sentry' &&
+        new Date(n.approach_at).getTime() >= now
+      );
+      upcoming.sort((a, b) => new Date(a.approach_at as string).getTime() - new Date(b.approach_at as string).getTime());
+      setNeo(upcoming[0] ?? null);
     }).catch(() => null);
     api.cmeWatch().then(setCme).catch(() => null);
     api.weatherNow().then(r => setWx(r.locations)).catch(() => null);
@@ -78,19 +116,29 @@ export default function Dashboard() {
       const st = (s.tide_stations || [])[0];
       if (!st) return;
       api.obs('tides', `tides:${st.id}:height`, 1).then(r => {
-        const p = r.points[r.points.length - 1];
+        const p = r.points[0];
         if (p) setTide({ value: p.value, ts: p.ts, station: st.name });
       }).catch(() => null);
     }).catch(() => null);
-  }, []);
+  }, [tick]);
 
   const quake = events.find(e => e.category === 'earthquake');
   const lvl = threatLevel(summary);
-  const kp = summary?.kp?.value ?? 0;
-  const bz = summary?.bz_gsm?.value ?? 0;
-  const proton = summary?.proton_gte10?.value ?? 0;
-  const dst = summary?.dst?.value ?? 0;
-  const sScale = proton >= 10000 ? 'S4' : proton >= 1000 ? 'S3' : proton >= 100 ? 'S2' : proton >= 10 ? 'S1' : '—';
+  const kp = summary?.kp?.value ?? null;
+  const bz = summary?.bz_gsm?.value ?? null;
+  const proton = summary?.proton_gte10?.value ?? null;
+  const dst = summary?.dst?.value ?? null;
+  const wind = summary?.wind_speed?.value ?? null;
+  const aurora = summary?.aurora_max?.value ?? null;
+  const sScale = proton == null ? '—' : proton >= 100000 ? 'S5' : proton >= 10000 ? 'S4' : proton >= 1000 ? 'S3' : proton >= 100 ? 'S2' : proton >= 10 ? 'S1' : '—';
+  const threatLabel = lvl == null ? 'NO DATA' : THREATS[lvl];
+  const threatColor = lvl == null ? '#64748b' : THREAT_COLORS[lvl];
+  const threatMeta = [
+    summary?.xray?.class ? `Flare ${summary.xray.class}` : null,
+    kp != null ? `Kp ${kp.toFixed(1)}` : null,
+    bz != null ? `Bz ${bz.toFixed(1)} nT` : null,
+    wind != null ? `Wind ${wind.toFixed(0)} km/s` : null,
+  ].filter(Boolean).join(' · ') || 'No space-weather observations yet';
 
   return (
     <div className="space-y-5">
@@ -98,25 +146,23 @@ export default function Dashboard() {
       <div className="grid grid-cols-12 gap-4">
         <div className="col-span-12 md:col-span-4 rounded-xl border border-slate-800 bg-slate-900/60 p-5 flex flex-col justify-center">
           <div className="text-[10px] uppercase tracking-[0.2em] text-slate-500 mb-1">Composite threat</div>
-          <div className="text-5xl font-black" style={{ color: THREAT_COLORS[lvl] }}>{THREATS[lvl]}</div>
-          <div className="text-sm text-slate-400 mt-2">
-            Flare {summary?.xray?.class ?? '—'} · Kp {kp.toFixed(1)} · Bz {bz.toFixed(1)} nT
-          </div>
+          <div className="text-5xl font-black" style={{ color: threatColor }}>{threatLabel}</div>
+          <div className="text-sm text-slate-400 mt-2">{threatMeta}</div>
           <div className="flex gap-1.5 mt-3">
             {THREAT_COLORS.map((c, i) => (
-              <div key={i} className="h-1.5 flex-1 rounded" style={{ background: i <= lvl ? c : '#1e293b' }} />
+              <div key={i} className="h-1.5 flex-1 rounded" style={{ background: lvl != null && i <= lvl ? c : '#1e293b' }} />
             ))}
           </div>
         </div>
         <div className="col-span-12 md:col-span-8 grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <Metric label="Kp" value={summary?.kp ? kp.toFixed(1) : '—'} color={kp >= 6 ? '#f87171' : kp >= 4 ? '#fbbf24' : '#4ade80'} sub="planetary" />
-          <Metric label="Bz GSM" value={summary?.bz_gsm ? `${bz.toFixed(1)} nT` : '—'} color={bz <= -10 ? '#f87171' : bz < 0 ? '#fbbf24' : '#94a3b8'} sub="southward = coupling" />
-          <Metric label="Protons" value={summary?.proton_gte10 ? sScale : '—'} color={proton >= 1000 ? '#f87171' : proton >= 10 ? '#fbbf24' : '#94a3b8'} sub={summary?.proton_gte10 ? `${proton.toFixed(1)} pfu` : '≥10 MeV'} />
-          <Metric label="Dst" value={summary?.dst ? `${dst.toFixed(0)} nT` : '—'} color={dst <= -100 ? '#f87171' : dst <= -50 ? '#fbbf24' : '#94a3b8'} sub="storm index" />
-          <Metric label="X-ray" value={summary?.xray ? `${summary.xray.class}` : '—'} color={summary?.xray?.class.startsWith('M') || summary?.xray?.class.startsWith('X') ? '#fbbf24' : '#94a3b8'} sub="GOES 0.1–0.8 nm" />
+          <Metric label="Kp" value={kp != null ? kp.toFixed(1) : '—'} color={kp == null ? '#64748b' : kp >= 6 ? '#f87171' : kp >= 4 ? '#fbbf24' : '#4ade80'} sub="planetary" />
+          <Metric label="Bz GSM" value={bz != null ? `${bz.toFixed(1)} nT` : '—'} color={bz == null ? '#64748b' : bz <= -10 ? '#f87171' : bz < 0 ? '#fbbf24' : '#94a3b8'} sub="southward = coupling" />
+          <Metric label="Protons" value={proton != null ? sScale : '—'} color={proton == null ? '#64748b' : proton >= 1000 ? '#f87171' : proton >= 10 ? '#fbbf24' : '#94a3b8'} sub={proton != null ? `${proton.toFixed(1)} pfu` : '≥10 MeV'} />
+          <Metric label="Dst" value={dst != null ? `${dst.toFixed(0)} nT` : '—'} color={dst == null ? '#64748b' : dst <= -100 ? '#f87171' : dst <= -50 ? '#fbbf24' : '#94a3b8'} sub="storm index" />
+          <Metric label="X-ray" value={summary?.xray?.class ?? '—'} color={!summary?.xray?.class ? '#64748b' : summary.xray.class.startsWith('M') || summary.xray.class.startsWith('X') ? '#fbbf24' : '#94a3b8'} sub="GOES 0.1–0.8 nm" />
           <Metric label="F10.7" value={summary?.f107 ? summary.f107.value.toFixed(0) : '—'} color="#fb923c" sub="sfu · SWPC" />
-          <Metric label="Solar wind" value={summary?.wind_speed ? `${summary.wind_speed.value.toFixed(0)}` : '—'} color="#22d3ee" sub={summary?.wind_density ? `${summary.wind_density.value.toFixed(1)} p/cc` : 'km/s · RTSW'} />
-          <Metric label="Aurora" value={summary?.aurora_max ? summary.aurora_max.value.toFixed(0) : '—'} color={(summary?.aurora_max?.value ?? 0) >= 30 ? '#4ade80' : '#94a3b8'} sub={summary?.aurora_oval ? `oval ≥ ${summary.aurora_oval.value.toFixed(0)}°` : 'OVATION max'} />
+          <Metric label="Solar wind" value={wind != null ? `${wind.toFixed(0)}` : '—'} color={wind == null ? '#64748b' : '#22d3ee'} sub={summary?.wind_density ? `${summary.wind_density.value.toFixed(1)} p/cc` : 'km/s · RTSW'} />
+          <Metric label="Aurora" value={aurora != null ? aurora.toFixed(0) : '—'} color={aurora != null && aurora >= 30 ? '#4ade80' : '#94a3b8'} sub={summary?.aurora_oval ? `oval ≥ ${summary.aurora_oval.value.toFixed(0)}°` : 'OVATION max'} />
         </div>
       </div>
 
@@ -183,7 +229,7 @@ export default function Dashboard() {
                 {neo.dist_lunar?.toFixed(2)} LD
               </div>
               <div className="text-xs text-slate-400 truncate">{neo.name} · {neo.kind}</div>
-              <div className="text-[10px] text-slate-500">{neo.hazardous ? 'potentially hazardous' : 'nominal'} · JPL</div>
+              <div className="text-[10px] text-slate-500">{neo.approach_at ? new Date(neo.approach_at).toISOString().slice(0, 10) : '—'} · {neo.hazardous ? 'potentially hazardous' : 'nominal'} · JPL</div>
             </>
           ) : <div className="text-slate-600 text-sm">no close approaches</div>}
         </div>

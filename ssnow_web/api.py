@@ -4,46 +4,61 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timedelta, timezone
-from typing import Any
 import os
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field
 
-from ssnow_core.models import Event
 from ssnow_core.logging_config import get_logger
+from ssnow_core.models import Event
+from ssnow_core.redact import redact_secrets
 from ssnow_core.scheduler import run_due, utcnow as core_utcnow
 from ssnow_core.seed import seed_if_empty
 from ssnow_core.sim import get_scenario, list_scenarios
+from ssnow_core.sources.registry import all_specs
 from ssnow_core.store import Store
-from ssnow_core.sources.registry import all_specs, spec_for
 
-app = FastAPI(title="Solar System Now API", version="0.1.0")
+app = FastAPI(title="Solar System Now API", version="0.1.3")
 
 logger = get_logger("ssnow_web.api")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# CORS is opt-in: the bundled UI is same-origin (Vite uses its dev proxy).
+_cors_origins = [o.strip() for o in (os.environ.get("SSNOW_CORS_ORIGINS") or "").split(",") if o.strip()]
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type", "X-SSNOW-Token", "Authorization"],
+    )
 
 _store: Store | None = None
 _subscribers: set[asyncio.Queue] = set()
+_ingest_lock = asyncio.Lock()
+
+
+def _queue_message(q: asyncio.Queue, msg: str) -> None:
+    try:
+        q.put_nowait(msg)
+    except asyncio.QueueFull:
+        try:
+            q.get_nowait()
+            q.put_nowait(msg)
+        except (asyncio.QueueEmpty, asyncio.QueueFull):
+            pass
 
 
 async def broadcast_event(data: dict[str, Any]) -> None:
     """Broadcast JSON message to all active SSE subscribers."""
     msg = f"data: {json.dumps(data)}\n\n"
     for q in list(_subscribers):
-        try:
-            q.put_nowait(msg)
-        except Exception:
-            pass
+        _queue_message(q, msg)
 
 
 def get_store() -> Store:
@@ -60,10 +75,10 @@ def _require_write_token(request: Request) -> None:
     """Optional write protection for POST endpoints.
 
     When the server runs with SSNOW_API_TOKEN set (e.g. port-forwarded or
-    hosted for other clients), every POST must carry the token in either
-    the `X-SSNOW-Token` header or an `Authorization: Bearer <token>` header.
-    Unset token (default localhost use) keeps all endpoints open.
-    GETs always stay public: they expose only public upstream data.
+    hosted for other clients), writes and GET `/api/settings` must carry the
+    token in either the `X-SSNOW-Token` header or an `Authorization: Bearer
+    <token>` header. Unset token (default loopback use) keeps everything open.
+    Public upstream GETs stay public.
     """
     expected = (os.environ.get("SSNOW_API_TOKEN") or "").strip()
     if not expected:
@@ -118,31 +133,36 @@ def health() -> dict[str, str]:
 
 @app.get("/api/stats")
 def stats() -> dict[str, Any]:
-    return get_store().stats()
+    data = get_store().stats()
+    for key in ("snapshots_dir", "assets_dir", "db_path"):
+        data.pop(key, None)
+    return data
 
 
 @app.get("/api/events")
 def list_events(
-    start: str | None = Query(default=None),
-    end: str | None = Query(default=None),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
     categories: str | None = Query(default=None),
     min_magnitude: float | None = Query(default=None),
-    limit: int = Query(default=500, le=5000),
-    min_lat: float | None = Query(default=None),
-    max_lat: float | None = Query(default=None),
-    min_lon: float | None = Query(default=None),
-    max_lon: float | None = Query(default=None),
+    limit: int = Query(default=500, ge=1, le=5000),
+    min_lat: float | None = Query(default=None, ge=-90, le=90),
+    max_lat: float | None = Query(default=None, ge=-90, le=90),
+    min_lon: float | None = Query(default=None, ge=-180, le=180),
+    max_lon: float | None = Query(default=None, ge=-180, le=180),
 ) -> dict[str, Any]:
     store = get_store()
-    start_dt = datetime.fromisoformat(start) if start else None
-    end_dt = datetime.fromisoformat(end) if end else None
     cat_list = [c.strip() for c in categories.split(",")] if categories else None
     bbox = None
-    if min_lat is not None and max_lat is not None and min_lon is not None and max_lon is not None:
+    bbox_values = (min_lat, max_lat, min_lon, max_lon)
+    if all(value is not None for value in bbox_values):
+        assert min_lat is not None and max_lat is not None and min_lon is not None and max_lon is not None
+        if min_lat > max_lat or min_lon > max_lon:
+            raise HTTPException(status_code=422, detail="invalid bbox: min must be <= max")
         bbox = (min_lat, max_lat, min_lon, max_lon)
     events = store.query_events(
-        start=start_dt,
-        end=end_dt,
+        start=start,
+        end=end,
         categories=cat_list,
         min_magnitude=min_magnitude,
         limit=limit,
@@ -184,19 +204,24 @@ def _neo_record(event: Event) -> dict[str, Any]:
         lo, hi = _f(ex.get("diameter_km_min")), _f(ex.get("diameter_km_max"))
         if lo is not None or hi is not None:
             size = ((lo or hi or 0) + (hi or lo or 0)) / 2.0
-    kind = ex.get("kind") or ("comet" if ex.get("is_comet") else "asteroid")
+    is_comet = bool(ex.get("is_comet"))
+    kind = ex.get("kind") or ("comet" if is_comet else "asteroid")
     hazardous = bool(ex.get("hazardous") or ex.get("hazardous_candidate"))
     if kind == "sentry":
         try:
             hazardous = float(ex.get("ps_cum", -99)) >= -5.0
         except (TypeError, ValueError):
             hazardous = False
+    if is_comet:
+        hazardous = False  # comets are not potentially hazardous asteroids
     return {
         "id": event.id,
         "name": (ex.get("fullname") or ex.get("des") or event.title),
         "kind": kind,
-        "is_comet": bool(ex.get("is_comet")),
+        "is_comet": is_comet,
         "hazardous": hazardous,
+        "hazardous_candidate": bool(ex.get("hazardous_candidate")),
+        "diameter_estimated": bool(ex.get("diameter_estimated")),
         "approach_at": event.occurred_at.isoformat() if event.occurred_at else None,
         "dist_lunar": ld,
         "dist_km": km,
@@ -209,12 +234,12 @@ def _neo_record(event: Event) -> dict[str, Any]:
 
 
 @app.get("/api/neos")
-def list_neos(limit: int = Query(default=200, le=2000)) -> dict[str, Any]:
+def list_neos(limit: int = Query(default=200, ge=1, le=2000)) -> dict[str, Any]:
     store = get_store()
     events = store.query_events(categories=["neo"], limit=limit)
     recs = [_neo_record(e) for e in events]
-    recs.sort(key=lambda r: (r["dist_lunar"] is None, r["dist_lunar"] or 1e9))
-    pha = sum(1 for r in recs if r["hazardous"])
+    recs.sort(key=lambda r: (r["dist_lunar"] is None, r["dist_lunar"] if r["dist_lunar"] is not None else 1e9))
+    pha = sum(1 for r in recs if r["hazardous"] and not r["is_comet"])
     inside_moon = sum(1 for r in recs if r["dist_lunar"] is not None and r["dist_lunar"] < 1.0)
     comets = sum(1 for r in recs if r["is_comet"])
     return {"count": len(recs), "pha": pha, "inside_moon": inside_moon, "comets": comets, "neos": recs}
@@ -223,36 +248,37 @@ def list_neos(limit: int = Query(default=200, le=2000)) -> dict[str, Any]:
 @app.get("/api/sources")
 def list_sources() -> dict[str, Any]:
     store = get_store()
-    states = store.all_source_states()
-    specs = {s.id: s for s in all_specs()}
-    return {
-        "sources": [
+    states = {state.source_id: state for state in store.all_source_states()}
+    rows: list[dict[str, Any]] = []
+    for spec in all_specs():
+        state = states.get(spec.id)
+        rows.append(
             {
-                "source_id": state.source_id,
-                "name": specs[state.source_id].name if state.source_id in specs else state.source_id,
-                "domain": specs[state.source_id].domain if state.source_id in specs else "—",
-                "attribution": specs[state.source_id].attribution if state.source_id in specs else "—",
-                "license": specs[state.source_id].license if state.source_id in specs else "—",
-                "cadence_seconds": specs[state.source_id].cadence_seconds if state.source_id in specs else None,
-                "enabled": specs[state.source_id].enabled if state.source_id in specs else False,
-                "last_attempt": state.last_attempt.isoformat() if state.last_attempt else None,
-                "last_success": state.last_success.isoformat() if state.last_success else None,
-                "last_error": state.last_error,
-                "consecutive_failures": state.consecutive_failures,
-                "next_due": state.next_due.isoformat() if state.next_due else None,
-                "records_ingested": state.records_ingested,
+                "source_id": spec.id,
+                "name": spec.name,
+                "domain": spec.domain,
+                "attribution": spec.attribution,
+                "license": spec.license,
+                "cadence_seconds": spec.cadence_seconds,
+                "enabled": spec.enabled,
+                "last_attempt": state.last_attempt.isoformat() if state and state.last_attempt else None,
+                "last_success": state.last_success.isoformat() if state and state.last_success else None,
+                "last_error": redact_secrets(state.last_error) if state and state.last_error else None,
+                "consecutive_failures": state.consecutive_failures if state else 0,
+                "next_due": state.next_due.isoformat() if state and state.next_due else None,
+                "records_ingested": state.records_ingested if state else 0,
             }
-            for state in states
-        ]
-    }
+        )
+    rows.sort(key=lambda row: row["source_id"])
+    return {"sources": rows}
 
 
 @app.get("/api/sun/kp")
 def sun_kp(
-    limit: int = Query(default=120, le=10000),
+    limit: int = Query(default=120, ge=1, le=10000),
 ) -> dict[str, Any]:
     store = get_store()
-    series = store.get_series("swpc", "swpc:kp", limit=limit)
+    series = store.get_recent_series("swpc", "swpc:kp", limit=limit)
     return {
         "series": "swpc:kp",
         "unit": "Kp",
@@ -279,23 +305,20 @@ def weather_now() -> dict[str, Any]:
     marine wave height/SST when available for coastal keys.
     """
     store = get_store()
-    locations = store.get_setting("locations") or []
+    locations = [loc for loc in (store.get_setting("locations") or []) if isinstance(loc, dict)]
     rows: list[dict[str, Any]] = []
 
     def latest(series: str) -> dict[str, Any] | None:
-        obs = store.get_series("openmeteo", series, limit=1)
-        if not obs:
+        obs = store.get_latest_observation("openmeteo", series)
+        if obs is None:
             return None
-        o = obs[-1]
-        return {"value": o.value, "unit": o.unit, "ts": o.ts.isoformat()}
+        return {"value": obs.value, "unit": obs.unit, "ts": obs.ts.isoformat()}
 
     for loc in locations:
         key = loc.get("key") or f"{loc.get('lat')},{loc.get('lon')}"
         rows.append(
             {
                 "name": loc.get("name", key),
-                "lat": loc.get("lat"),
-                "lon": loc.get("lon"),
                 "temp_c": latest(f"weather:{key}:temperature_2m"),
                 "wind_kmh": latest(f"weather:{key}:wind_speed_10m"),
                 "precip_pct": latest(f"weather:{key}:precipitation_probability"),
@@ -309,9 +332,9 @@ def weather_now() -> dict[str, Any]:
 
 
 @app.get("/api/weather/{series_id}")
-def weather_series(series_id: str, limit: int = Query(default=48, le=1000)) -> dict[str, Any]:
+def weather_series(series_id: str, limit: int = Query(default=48, ge=1, le=1000)) -> dict[str, Any]:
     store = get_store()
-    series = store.get_series("openmeteo", series_id, limit=limit)
+    series = store.get_recent_series("openmeteo", series_id, limit=limit)
     return {
         "series": series_id,
         "unit": series[0].unit if series else None,
@@ -324,14 +347,11 @@ def weather_series(series_id: str, limit: int = Query(default=48, le=1000)) -> d
 def observations(
     source: str = Query(),
     series: str = Query(),
-    limit: int = Query(default=120, le=10000),
-    order: str = Query(default="asc", pattern="^(asc|desc)$"),
+    limit: int = Query(default=120, ge=1, le=50000),
+    order: Literal["asc", "desc"] = Query(default="asc"),
 ) -> dict[str, Any]:
     store = get_store()
-    rows = store.get_series(source, series, limit=10000)
-    if order == "desc":
-        rows = rows[::-1]
-    rows = rows[:limit]
+    rows = store.get_series(source, series, limit=limit, order=order)
     return {
         "source": source,
         "series": series,
@@ -347,52 +367,51 @@ def observations(
 @app.get("/api/sun/summary")
 def sun_summary() -> dict[str, Any]:
     store = get_store()
-    kp = store.latest_observations("swpc", "swpc:kp")
-    kp_fc = store.get_series("swpc", "swpc:kp_forecast", limit=8)
-    xray = store.get_series("swpc", "swpc:xray_flux", limit=1)
-    f107 = store.get_series("swpc", "swpc:f107", limit=1)
-    aurora = store.get_series("aurora", "aurora:intensity_max", limit=1)
-    bz = store.get_series("swpc", "swpc:imf_bz_gsm", limit=1)
-    bt = store.get_series("swpc", "swpc:imf_bt", limit=1)
-    dst = store.get_series("swpc", "swpc:dst", limit=1)
-    proton = store.get_series("swpc", "swpc:proton_flux_gte10MeV", limit=1)
-    proton50 = store.get_series("swpc", "swpc:proton_flux_gte50MeV", limit=1)
-    proton100 = store.get_series("swpc", "swpc:proton_flux_gte100MeV", limit=1)
-    wind = store.get_series("swpc", "swpc:solarwind_speed", limit=1)
-    wind_dens = store.get_series("swpc", "swpc:solarwind_density", limit=1)
-    aurora_oval = store.get_series("aurora", "aurora:oval_equatorward_deg", limit=1)
-    aurora_mean = store.get_series("aurora", "aurora:intensity_mean_band", limit=1)
+    def _point(obs):
+        return {"value": obs.value, "ts": obs.ts.isoformat()} if obs else None
+
+    kp = store.get_latest_observation("swpc", "swpc:kp")
+    kp_fc = store.get_recent_series("swpc", "swpc:kp_forecast", limit=8)
+    xray = store.get_latest_observation("swpc", "swpc:xray_flux")
+    f107 = store.get_latest_observation("swpc", "swpc:f107")
+    aurora = store.get_latest_observation("aurora", "aurora:intensity_max")
+    bz = store.get_latest_observation("swpc", "swpc:imf_bz_gsm")
+    bt = store.get_latest_observation("swpc", "swpc:imf_bt")
+    dst = store.get_latest_observation("swpc", "swpc:dst")
+    proton = store.get_latest_observation("swpc", "swpc:proton_flux_gte10MeV")
+    proton50 = store.get_latest_observation("swpc", "swpc:proton_flux_gte50MeV")
+    proton100 = store.get_latest_observation("swpc", "swpc:proton_flux_gte100MeV")
+    wind = store.get_latest_observation("swpc", "swpc:solarwind_speed")
+    wind_dens = store.get_latest_observation("swpc", "swpc:solarwind_density")
+    aurora_oval = store.get_latest_observation("aurora", "aurora:oval_equatorward_deg")
+    aurora_mean = store.get_latest_observation("aurora", "aurora:intensity_mean_band")
     # Magnetic declination is location-dependent: report it for the primary location.
-    locations = store.get_setting("locations") or []
+    locations = [loc for loc in (store.get_setting("locations") or []) if isinstance(loc, dict)]
     declination = None
     if locations:
-        key = locations[0].get("key") or f"{locations[0]['lat']},{locations[0]['lon']}"
-        declination = store.get_series("geomag", f"geomag:{key}:declination", limit=1)
-    ssn = store.get_series("swpc", "swpc:ssn_observed", limit=1)
-    ssn_pred = store.get_series("swpc", "swpc:ssn_predicted", limit=1)
+        key = locations[0].get("key") or f"{locations[0].get('lat')},{locations[0].get('lon')}"
+        declination = store.get_latest_observation("geomag", f"geomag:{key}:declination")
+    ssn = store.get_latest_observation("swpc", "swpc:ssn_observed")
+    ssn_pred = store.get_latest_observation("swpc", "swpc:ssn_predicted")
     return {
-        "kp": {"value": kp[0].value, "ts": kp[0].ts.isoformat()} if kp else None,
+        "kp": _point(kp),
         "kp_forecast": [{"ts": o.ts.isoformat(), "value": o.value} for o in kp_fc],
-        "xray": {
-            "value": xray[-1].value,
-            "ts": xray[-1].ts.isoformat(),
-            "class": xray[-1].extra_json.get("class"),
-        } if xray else None,
-        "f107": {"value": f107[-1].value, "ts": f107[-1].ts.isoformat()} if f107 else None,
-        "aurora_max": {"value": aurora[0].value, "ts": aurora[0].ts.isoformat()} if aurora else None,
-        "bz_gsm": {"value": bz[-1].value, "ts": bz[-1].ts.isoformat(), "spacecraft": bz[-1].extra_json.get("spacecraft")} if bz else None,
-        "bt": {"value": bt[-1].value, "ts": bt[-1].ts.isoformat()} if bt else None,
-        "dst": {"value": dst[-1].value, "ts": dst[-1].ts.isoformat()} if dst else None,
-        "proton_gte10": {"value": proton[-1].value, "ts": proton[-1].ts.isoformat()} if proton else None,
-        "proton_gte50": {"value": proton50[-1].value, "ts": proton50[-1].ts.isoformat()} if proton50 else None,
-        "proton_gte100": {"value": proton100[-1].value, "ts": proton100[-1].ts.isoformat()} if proton100 else None,
-        "wind_speed": {"value": wind[-1].value, "ts": wind[-1].ts.isoformat()} if wind else None,
-        "wind_density": {"value": wind_dens[-1].value, "ts": wind_dens[-1].ts.isoformat()} if wind_dens else None,
-        "aurora_oval": {"value": aurora_oval[-1].value, "ts": aurora_oval[-1].ts.isoformat()} if aurora_oval else None,
-        "aurora_mean": {"value": aurora_mean[-1].value, "ts": aurora_mean[-1].ts.isoformat()} if aurora_mean else None,
-        "declination": {"value": declination[-1].value, "ts": declination[-1].ts.isoformat(), "location": locations[0].get("name")} if declination else None,
-        "ssn": {"value": ssn[-1].value, "ts": ssn[-1].ts.isoformat()} if ssn else None,
-        "ssn_predicted": {"value": ssn_pred[-1].value, "ts": ssn_pred[-1].ts.isoformat()} if ssn_pred else None,
+        "xray": {**_point(xray), "class": xray.extra_json.get("class")} if xray else None,
+        "f107": _point(f107),
+        "aurora_max": _point(aurora),
+        "bz_gsm": {**_point(bz), "spacecraft": bz.extra_json.get("spacecraft")} if bz else None,
+        "bt": _point(bt),
+        "dst": _point(dst),
+        "proton_gte10": _point(proton),
+        "proton_gte50": _point(proton50),
+        "proton_gte100": _point(proton100),
+        "wind_speed": _point(wind),
+        "wind_density": _point(wind_dens),
+        "aurora_oval": _point(aurora_oval),
+        "aurora_mean": _point(aurora_mean),
+        "declination": {**_point(declination), "location": locations[0].get("name")} if declination else None,
+        "ssn": _point(ssn),
+        "ssn_predicted": _point(ssn_pred),
     }
 
 
@@ -447,17 +466,17 @@ def sun_channel_image(channel: str):
 @app.get("/api/stream/live")
 async def sse_live(request: Request):
     """Server-Sent Events (SSE) live stream for real-time alerts and ingestion updates."""
-    q: asyncio.Queue = asyncio.Queue()
+    q: asyncio.Queue = asyncio.Queue(maxsize=128)
     _subscribers.add(q)
 
-    # Initial connection payload
+    # Minimal initial payload: no filesystem paths and no expensive dir walk.
     store = get_store()
     init_data = {
         "type": "connected",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "stats": store.stats(),
+        "stats": store.counts(),
     }
-    q.put_nowait(f"data: {json.dumps(init_data)}\n\n")
+    _queue_message(q, f"data: {json.dumps(init_data)}\n\n")
 
     async def event_generator():
         try:
@@ -495,11 +514,21 @@ async def ingest(request: Request) -> dict[str, Any]:
         with httpx.Client() as client:
             return run_due(store, client, now)
 
-    loop = asyncio.get_running_loop()
-    reports = await loop.run_in_executor(None, _run)
+    if _ingest_lock.locked():
+        raise HTTPException(status_code=409, detail="ingest already running")
+    async with _ingest_lock:
+        loop = asyncio.get_running_loop()
+        reports = await loop.run_in_executor(None, _run)
 
+    summary = {
+        "ok": sum(1 for r in reports if r.ok),
+        "failed": sum(1 for r in reports if not r.ok),
+        "events": sum(len(r.events) for r in reports),
+        "observations": sum(len(r.observations) for r in reports),
+    }
     result = {
         "timestamp": now.isoformat(),
+        "summary": summary,
         "sources": [
             {
                 "source_id": r.source_id,
@@ -507,29 +536,50 @@ async def ingest(request: Request) -> dict[str, Any]:
                 "events": len(r.events),
                 "observations": len(r.observations),
                 "assets": r.assets,
-                "error": r.error,
+                "error": redact_secrets(r.error) if r.error else None,
             }
             for r in reports
         ],
     }
 
     # Broadcast to all live stream listeners
-    await broadcast_event({
-        "type": "ingest_complete",
-        "timestamp": now.isoformat(),
-        "summary": {
-            "ok": sum(1 for r in reports if r.ok),
-            "failed": sum(1 for r in reports if not r.ok),
-            "events": sum(len(r.events) for r in reports),
-            "observations": sum(len(r.observations) for r in reports),
-        },
-    })
+    await broadcast_event(
+        {
+            "type": "ingest_complete",
+            "timestamp": now.isoformat(),
+            "summary": summary,
+        }
+    )
 
     return result
 
 
+class LocationModel(BaseModel):
+    model_config = ConfigDict(extra="allow", str_strip_whitespace=True)
+    name: str = Field(min_length=1, max_length=120)
+    lat: float = Field(ge=-90, le=90)
+    lon: float = Field(ge=-180, le=180)
+    key: str | None = Field(default=None, max_length=64)
+
+
+class TideStationModel(BaseModel):
+    model_config = ConfigDict(extra="allow", str_strip_whitespace=True)
+    id: str = Field(min_length=1, max_length=32)
+    name: str = Field(default="", max_length=120)
+
+
+class SettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    locations: list[LocationModel] | None = None
+    tide_stations: list[TideStationModel] | None = None
+    nasa_api_key: str | None = Field(default=None, max_length=200)
+    retention_days: int | None = Field(default=None, ge=1, le=3650)
+
+
 @app.get("/api/settings")
-def get_settings() -> dict[str, Any]:
+def get_settings(request: Request) -> dict[str, Any]:
+    # Configured locations are private when the operator opted into a token.
+    _require_write_token(request)
     store = get_store()
     key = store.get_setting("nasa_api_key")
     return {
@@ -541,17 +591,20 @@ def get_settings() -> dict[str, Any]:
 
 
 @app.post("/api/settings")
-def set_settings(body: dict[str, Any], request: Request) -> dict[str, Any]:
+def set_settings(body: SettingsUpdate, request: Request) -> dict[str, Any]:
     _require_write_token(request)
     store = get_store()
-    if "locations" in body:
-        store.set_setting("locations", body["locations"])
-    if "tide_stations" in body:
-        store.set_setting("tide_stations", body["tide_stations"])
-    if "nasa_api_key" in body:
-        store.set_setting("nasa_api_key", body["nasa_api_key"] or None)
-    if "retention_days" in body:
-        store.set_setting("retention_days", int(body["retention_days"]))
+    values: dict[str, Any] = {}
+    if body.locations is not None:
+        values["locations"] = [loc.model_dump() for loc in body.locations]
+    if body.tide_stations is not None:
+        values["tide_stations"] = [station.model_dump() for station in body.tide_stations]
+    if "nasa_api_key" in body.model_fields_set:
+        values["nasa_api_key"] = body.nasa_api_key or None
+    if body.retention_days is not None:
+        values["retention_days"] = body.retention_days
+    if values:
+        store.set_settings(values)
     return {"ok": True}
 
 
@@ -596,69 +649,117 @@ def run_sim(body: dict[str, Any], request: Request) -> dict[str, Any]:
         params.setdefault(p.id, p.default)
     scenario = cls()
     result = scenario.run(params)
-    return {"scenario": sim_id, "result": result}
+    return {"scenario": sim_id, "simulation": True, "result": result}
 
 
 @app.get("/api/sim/cme-watch")
 def cme_watch() -> dict[str, Any]:
-    """Auto-fed CME arrival estimate: latest DONKI CME speed + latest X-ray
-    flare class run through the flare_arrival SIMULATION. Labelled model
-    output (ballistic constant-speed assumption), NOT an observation."""
+    """Auto-fed CME arrival estimate: latest directed DONKI CME with a real
+    measured speed + latest measured GOES flux run through the flare_arrival
+    SIMULATION. Labelled model output, never an observation."""
+    from ssnow_core.sim.flare import flare_class_from_flux
+    from ssnow_core.sources.donki import is_earth_directed
+
     store = get_store()
-    cmes = store.query_events(categories=["cme"], limit=5)
+    cmes = store.query_events(categories=["cme"], limit=20)
     if not cmes:
         return {"available": False, "reason": "No CME in window"}
-    # Prefer the fastest recent Earth-directed candidate.
-    def _score(e):
-        ex = e.extra_json or {}
+    candidates: list[tuple[Event, float]] = []
+    for event in cmes:
+        ex = event.extra_json or {}
+        if not is_earth_directed(ex):
+            continue
         try:
-            speed = float(ex.get("speed") or 0)
+            speed = float(ex.get("speed"))
         except (TypeError, ValueError):
-            speed = 0.0
-        directed = ex.get("type") in ("S", "C") or (ex.get("half_angle") or 0) >= 60
-        return (directed, speed)
-
-    best = max(cmes, key=_score)
-    ex = best.extra_json or {}
-    try:
-        speed = float(ex.get("speed") or 500.0)
-    except (TypeError, ValueError):
-        speed = 500.0
-    xray = store.get_series("swpc", "swpc:xray_flux", limit=1)
-    letter = (xray[-1].extra_json.get("class", "C") if xray else "C")[:1].upper()
-    if letter not in ("A", "B", "C", "M", "X"):
-        letter = "C"
+            continue
+        if speed <= 0:
+            continue
+        candidates.append((event, speed))
+    if not candidates:
+        return {
+            "available": False,
+            "reason": "No Earth-directed CME with a measured speed in window",
+        }
+    best, speed = max(candidates, key=lambda pair: pair[1])
+    xray = store.get_latest_observation("swpc", "swpc:xray_flux")
+    if xray is None:
+        return {"available": False, "reason": "No measured X-ray flux for storm proxy"}
+    flare = flare_class_from_flux(float(xray.value))
+    if flare is None:
+        return {"available": False, "reason": "X-ray flux below A-class floor"}
+    letter, subclass = flare
+    now = core_utcnow()
+    age_hours = 0.0
+    if best.occurred_at is not None:
+        age_hours = max(0.0, (now - best.occurred_at).total_seconds() / 3600.0)
     cls = get_scenario("flare_arrival")
     assert cls is not None
-    result = cls().run({"cme_speed_km_s": speed, "distance_au": 1.0, "flare_class": letter, "flare_subclass": 5.0})
+    result = cls().run(
+        {
+            "cme_speed_km_s": speed,
+            "distance_au": 1.0,
+            "flare_class": letter,
+            "flare_subclass": subclass,
+            "elapsed_hours": min(age_hours, 240.0),
+        }
+    )
+    total = float(result.get("total_travel_hours") or 0.0)
+    if age_hours > total * 1.25 and total > 0:
+        return {
+            "available": False,
+            "reason": "CME travel window already elapsed (run Sim explorer with custom inputs)",
+            "cme_id": best.id,
+            "cme_time": best.occurred_at.isoformat() if best.occurred_at else None,
+            "cme_age_hours": age_hours,
+        }
     return {
         "available": True,
         "simulation": True,
         "cme_id": best.id,
         "cme_time": best.occurred_at.isoformat() if best.occurred_at else None,
+        "cme_age_hours": age_hours,
         "cme_speed_km_s": speed,
         "flare_class": letter,
+        "flare_subclass": subclass,
+        "flare_flux_w_m2": float(xray.value),
+        "xray_time": xray.ts.isoformat(),
         "result": result,
     }
 
 
 # ---- Static file serving (built React front-end) ----
 
-_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATIC_DIR = os.path.join(_BASE_DIR, "..", "static")
-if not os.path.exists(STATIC_DIR):
-    STATIC_DIR = os.path.join(_BASE_DIR, "dist")
-INDEX_HTML = os.path.join(STATIC_DIR, "index.html")
+_BASE_DIR = Path(__file__).resolve().parent
+STATIC_DIR = (_BASE_DIR / ".." / "static").resolve()
+if not STATIC_DIR.exists():
+    STATIC_DIR = (_BASE_DIR / "dist").resolve()
+INDEX_HTML = STATIC_DIR / "index.html"
+_ASSETS_ROOT = (STATIC_DIR / "assets").resolve()
 
 
 @app.get("/assets/{path:path}")
 def assets(path: str):
-    return FileResponse(os.path.join(STATIC_DIR, "assets", path))
+    try:
+        target = (_ASSETS_ROOT / path).resolve()
+    except (OSError, ValueError):
+        raise HTTPException(status_code=404, detail="asset not found")
+    if not target.is_relative_to(_ASSETS_ROOT) or not target.is_file():
+        raise HTTPException(status_code=404, detail="asset not found")
+    return FileResponse(target)
+
+
+@app.get("/favicon.svg")
+def favicon():
+    path = STATIC_DIR / "favicon.svg"
+    if path.exists():
+        return FileResponse(path, media_type="image/svg+xml")
+    raise HTTPException(status_code=404, detail="favicon not found")
 
 
 @app.get("/")
 def root():
-    if os.path.exists(INDEX_HTML):
+    if INDEX_HTML.exists():
         return FileResponse(INDEX_HTML)
     return {"detail": "front-end not built; run `npm run build` in ssnow_web/"}
 
@@ -667,7 +768,7 @@ def root():
 def spa(full_path: str):
     if full_path.startswith("api"):
         raise HTTPException(status_code=404)
-    if os.path.exists(INDEX_HTML):
+    if INDEX_HTML.exists():
         return FileResponse(INDEX_HTML)
     return {"detail": "front-end not built; run `npm run build` in ssnow_web/"}
 

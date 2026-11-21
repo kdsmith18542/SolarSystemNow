@@ -114,7 +114,8 @@ class CadAdapter(HttpAdapter):
             des = str(col(row, "des") or "").strip()
             fullname = str(col(row, "fullname") or col(row, "des") or "").strip()
             cd = col(row, "cd")
-            occurred_at = _parse_cd(cd) or now
+            parsed_time = _parse_cd(cd)
+            occurred_at = parsed_time or now
             try:
                 dist_au = float(col(row, "dist")) if col(row, "dist") is not None else None
             except (TypeError, ValueError):
@@ -132,17 +133,26 @@ class CadAdapter(HttpAdapter):
                 diam_km = float(diam) if diam not in (None, "") else None
             except (TypeError, ValueError):
                 diam_km = None
+            diameter_estimated = False
             if diam_km is None:
                 diam_km = _diameter_from_h_km(h_val)
+                diameter_estimated = diam_km is not None
             dist_km = dist_au * AU_KM if dist_au is not None else None
             dist_lunar = dist_km / LUNAR_KM if dist_km is not None else None
             comet = _is_comet(des, fullname)
             # PHA proxy: H <= 22 and close within 0.05 au (true PHA uses MOID;
             # label honestly as candidate since CAD rows lack MOID here).
-            hazardous = bool(h_val is not None and h_val <= 22.0 and dist_au is not None and dist_au <= 0.05)
+            hazardous = bool(
+                not comet
+                and h_val is not None
+                and h_val <= 22.0
+                and dist_au is not None
+                and dist_au <= 0.05
+            )
             kind = "comet" if comet else "asteroid"
             ld_text = f"{dist_lunar:.1f} LD" if dist_lunar is not None else "?"
             extra = {
+                "time_estimated": parsed_time is None,
                 "des": des,
                 "fullname": fullname,
                 "kind": kind,
@@ -153,6 +163,7 @@ class CadAdapter(HttpAdapter):
                 "velocity_km_s": v_rel,
                 "absolute_magnitude_h": h_val,
                 "diameter_km": diam_km,
+                "diameter_estimated": diameter_estimated,
                 "hazardous_candidate": hazardous,
                 "orbiting_body": col(row, "body") or "Earth",
                 "sbdb_url": f"https://ssd.jpl.nasa.gov/tools/sbdb_lookup.html#/?sstr={des}",

@@ -85,12 +85,23 @@ class AlertsAdapter(HttpAdapter):
         for item in items:
             message = item.get("message") or ""
             title = str(message).splitlines()[0] if message else "Space Weather Alert"
-            occurred_at = _parse_iso_utc(item.get("issue_datetime")) or now
+            issued = _parse_iso_utc(item.get("issue_datetime"))
+            occurred_at = issued or now
+            product = str(item.get("product_id") or "")
+            serial = str(item.get("serial_number") or "").strip()
+            if serial:
+                key = f"{product or 'alert'}:{serial}"
+            elif issued is not None:
+                key = f"{product or 'alert'}:{issued.isoformat()}"
+            else:
+                import hashlib
+
+                key = f"{product or 'alert'}:{hashlib.sha1(message.encode('utf-8')).hexdigest()[:12]}"
             events.append(
                 Event(
-                    id=f"swpc:alert:{item.get('product_id') or item.get('issue_datetime')}",
+                    id=f"swpc:alert:{key}",
                     source="swpc",
-                    upstream_id=str(item.get("product_id") or item.get("issue_datetime")),
+                    upstream_id=key,
                     category="space_weather_alert",
                     title=title,
                     description=message,
@@ -104,7 +115,10 @@ class AlertsAdapter(HttpAdapter):
                     url="https://www.swpc.noaa.gov/",
                     ingested_at=now,
                     extra_json={
+                        "time_estimated": issued is None,
                         "product_id": item.get("product_id"),
+                        "serial_number": item.get("serial_number"),
+                        "issue_datetime": item.get("issue_datetime"),
                         "regions": item.get("regions"),
                     },
                 )

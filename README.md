@@ -80,6 +80,12 @@ docker compose -f packaging/docker-compose.yml up -d --build
 
 Prebuilt AppImage: see [Releases](https://github.com/kdsmith18542/SolarSystemNow/releases).
 
+Releases are unsigned; each ships a `SHA256SUMS` file — verify with:
+
+```bash
+sha256sum -c SHA256SUMS
+```
+
 ```bash
 # from the repo root (downloads appimagetool on first run; no FUSE needed)
 sh packaging/build_appimage.sh

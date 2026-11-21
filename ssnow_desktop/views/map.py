@@ -9,18 +9,47 @@ from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
 try:
+    from PySide6.QtWebEngineCore import QWebEngineSettings
     from PySide6.QtWebEngineWidgets import QWebEngineView
 
     HAVE_WEBENGINE = True
 except Exception:  # pragma: no cover - environment dependent
     HAVE_WEBENGINE = False
 
+from importlib import resources
+from functools import lru_cache
+
 from .base_view import BaseView
 from .now import fmt_ts
 
-MAP_STYLE = "https://demotiles.maplibre.org/style.json"
-MAPLIBRE_CSS = "https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"
-MAPLIBRE_JS = "https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.min.js"
+# Bundled MapLibre + Natural Earth outline: the desktop map must work offline.
+MAPLIBRE_CSS = "maplibre-gl.css"
+MAPLIBRE_JS = "maplibre-gl.js"
+
+
+@lru_cache(maxsize=1)
+def offline_style() -> dict:
+    base = resources.files("ssnow_core").joinpath("data/geo")
+    land = json.loads(base.joinpath("ne_110m_land.geojson").read_text(encoding="utf-8"))
+    borders = json.loads(base.joinpath("ne_110m_admin_0_boundary_lines_land.geojson").read_text(encoding="utf-8"))
+    return {
+        "version": 8,
+        "name": "Solar System Now offline",
+        "sources": {
+            "land": {"type": "geojson", "data": land, "attribution": "Natural Earth (public domain)"},
+            "borders": {"type": "geojson", "data": borders, "attribution": "Natural Earth (public domain)"},
+        },
+        "layers": [
+            {"id": "background", "type": "background", "paint": {"background-color": "#0b1220"}},
+            {"id": "land-fill", "type": "fill", "source": "land", "paint": {"fill-color": "#1e293b"}},
+            {"id": "land-outline", "type": "line", "source": "land", "paint": {"line-color": "#475569", "line-width": 0.6}},
+            {"id": "borders", "type": "line", "source": "borders", "paint": {"line-color": "#334155", "line-width": 0.35}},
+        ],
+    }
+
+
+def maplibre_dir() -> str:
+    return str(resources.files("ssnow_core").joinpath("data/maplibre"))
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html>
@@ -86,12 +115,12 @@ function escapeHtml(value) {
 
 function initMap() {
   if (typeof maplibregl === 'undefined') {
-    document.body.innerHTML = '<div style="padding:20px;color:#666;">Map requires internet access (MapLibre CDN). Open the Events tab for offline data.</div>';
+    document.body.innerHTML = '<div style="padding:20px;color:#666;">Map assets are unavailable in this build. Open the Events tab for offline data.</div>';
     return;
   }
   const map = new maplibregl.Map({
     container: 'map',
-    style: '%%STYLE%%',
+    style: %%STYLE%%,
     center: [%%LON%%, %%LAT%%],
     zoom: %%ZOOM%%,
   });
@@ -205,6 +234,12 @@ class MapView(BaseView):
             self.view = None
             return
         self.view = QWebEngineView()
+        self.view.settings().setAttribute(
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True
+        )
+        self.view.settings().setAttribute(
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True
+        )
         self.view.setHtml("<p>Loading map…</p>")
         layout.addWidget(self.view)
         if not getattr(self.store, "defer_initial_refresh", False):
@@ -327,10 +362,11 @@ class MapView(BaseView):
                 extra = oval_obs.extra_json or {}
                 oval_n = extra.get("boundary_north") or []
                 oval_s = extra.get("boundary_south") or []
+        style_json = json.dumps(offline_style(), separators=(",", ":")).replace("<", "\\u003c")
         html = (
             HTML_TEMPLATE.replace("%%CSS%%", MAPLIBRE_CSS)
             .replace("%%JS%%", MAPLIBRE_JS)
-            .replace("%%STYLE%%", MAP_STYLE)
+            .replace("%%STYLE%%", style_json)
             .replace("%%RADAR%%", "true" if (self._radar_box is not None and self._radar_box.isChecked()) else "false")
             .replace("%%OVAL%%", f"{oval:.1f}" if oval is not None else "null")
             .replace("%%OVAL_N%%", json.dumps(oval_n).replace("</", "<\\/"))
@@ -340,7 +376,7 @@ class MapView(BaseView):
             .replace("%%ZOOM%%", f"{zoom:.1f}")
             .replace("%%GEOJSON%%", geojson)
         )
-        self.view.setHtml(html, QUrl("about:blank"))
+        self.view.setHtml(html, QUrl.fromLocalFile(maplibre_dir() + "/"))
 
     def focus(self, latitude: float, longitude: float) -> None:
         """Center the map on an event (Show on Map); sticky until Reset."""

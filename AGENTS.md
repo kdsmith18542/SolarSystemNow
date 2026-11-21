@@ -176,6 +176,7 @@ Undelivered notifications are queried via `store.pending_notifications()` and ma
 - Earth map (`MapView` desktop + web) uses simple layer checkbox groups: Quakes+Tsunami | Volcano+Fire | Storm/Flood/Alerts | Space weather | Other. No 3D globe, no tilt/rotate.
 - Space objects (NEOs) never appear on the Earth map (they have no lat/lon by design) — they live in the dedicated `NeoView` / web `Asteroids` tab with an LD radar strip + explicitly-labelled distance schematic (NOT true orbits, per no-fabrication rule).
 - Rationale: we view more than Earth (Sun, Moon, asteroids, comets, solar wind). One geographic map + one solar-system schematic keeps it smooth and easy.
+- Offline map rule: desktop ships MapLibre CSS/JS + `data/geo/ne_110m_*.geojson` and uses an inline Natural Earth style (no CDN). Web tries the CDN basemap then falls back to the bundled outline. Never bring back the “Map requires internet” dead end.
 
 ### Streamer / broadcaster tooling verdict: CONFIRMED
 - OBS F11 fullscreen + SSE `/api/stream/live` + threat dial + aurora verdict card + CME watch + multi-location weather/AQ/marine + magnetic pole drift/anomaly reports + quake/tsunami/volcano layers = full all-in-one loop (space → aurora call → local weather → hazard map). Validated for space-weather and weather streamers; no extra providers required.

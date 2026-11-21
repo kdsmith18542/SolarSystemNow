@@ -103,7 +103,7 @@ sh packaging/build_appimage.sh
 
 ## Hardware / GPU
 
-No CUDA or GPU toolkit is required. Ingest is HTTP/JSON; charts are Qt-painted; the map uses QtWebEngine, which falls back to software rendering if OpenGL is unavailable (`QTWEBENGINE_CHROMIUM_FLAGS=--disable-gpu`).
+No CUDA or GPU toolkit is required. Ingest is HTTP/JSON; charts are Qt-painted; the map uses QtWebEngine, which falls back to software rendering if OpenGL is unavailable (`QTWEBENGINE_CHROMIUM_FLAGS=--disable-gpu`). MapLibre and a Natural Earth land/border basemap are bundled, so the desktop map works fully offline; the web map falls back to the same outline when the basemap CDN is blocked.
 
 ## Data integrity
 

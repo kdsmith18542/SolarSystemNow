@@ -32,7 +32,7 @@ where = ["."]
 include = ["ssnow_core*", "ssnow_desktop*", "ssnow_web*", "scripts*"]
 
 [tool.setuptools.package-data]
-"ssnow_core" = ["data/seed/*", "data/de421.bsp"]
+"ssnow_core" = ["data/seed/*", "data/de421.bsp", "data/maplibre/*", "data/geo/*"]
 
 [tool.pytest.ini_options]
 addopts = ["-q"]

@@ -4,8 +4,26 @@ import type { Event } from '../services/api';
 import { useRefreshTick } from '../hooks/useRefreshTick';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Map, Marker, Popup } from 'maplibre-gl';
+import land from '../data/ne_110m_land.json';
+import borders from '../data/ne_110m_admin_0_boundary_lines_land.json';
 
 const STYLE = 'https://demotiles.maplibre.org/style.json';
+
+// Bundled Natural Earth outline so the map still renders without a CDN.
+const OFFLINE_STYLE = {
+  version: 8,
+  name: 'Solar System Now offline',
+  sources: {
+    land: { type: 'geojson', data: land, attribution: 'Natural Earth (public domain)' },
+    borders: { type: 'geojson', data: borders, attribution: 'Natural Earth (public domain)' },
+  },
+  layers: [
+    { id: 'background', type: 'background', paint: { 'background-color': '#0b1220' } },
+    { id: 'land-fill', type: 'fill', source: 'land', paint: { 'fill-color': '#1e293b' } },
+    { id: 'land-outline', type: 'line', source: 'land', paint: { 'line-color': '#475569', 'line-width': 0.6 } },
+    { id: 'borders', type: 'line', source: 'borders', paint: { 'line-color': '#334155', 'line-width': 0.35 } },
+  ],
+} as any;
 
 const CATEGORY_COLORS: Record<string, string> = {
   earthquake: '#ef4444', // red
@@ -194,16 +212,34 @@ export default function MapView() {
       zoom: 1.1,
     });
     mapRef.current = map;
-    const loadTimer = window.setTimeout(() => {
-      if (!mapRef.current?.loaded()) {
+    let fallback = false;
+    let loadedOnce = false;
+    const applyOffline = () => {
+      if (fallback) return;
+      fallback = true;
+      setMapError(null);
+      try {
+        map.setStyle(OFFLINE_STYLE);
+      } catch {
         setMapError('Map style/tiles unavailable (offline or blocked CDN). Event data still works below.');
       }
-    }, 12000);
-    map.on('load', () => {
-      window.clearTimeout(loadTimer);
+    };
+    const onStyleReady = () => {
+      loadedOnce = true;
       setMapReady(true);
       setMapError(null);
       loadMapData();
+    };
+    const loadTimer = window.setTimeout(() => {
+      if (!loadedOnce) applyOffline();
+    }, 8000);
+    map.on('load', () => {
+      window.clearTimeout(loadTimer);
+      onStyleReady();
+    });
+    map.on('style.load', onStyleReady);
+    map.on('error', () => {
+      if (!map.isStyleLoaded()) applyOffline();
     });
     return () => {
       window.clearTimeout(loadTimer);

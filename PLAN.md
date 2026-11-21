@@ -34,7 +34,7 @@ The core infrastructure and high-priority reliability fixes have been successful
   - Desktop map color-coded markers and frosted-glass legend.
   - SDO solar imagery served to the web frontend via `/api/sun/image`.
   - Desktop system tray alerts for significant earthquakes ($M \ge 6.0$) and geomagnetic storms ($Kp \ge 5.0$).
-- [x] **Verification**: All 100 unit/adapter/API/smoke/regression tests pass cleanly (`pytest -v`); Playwright 9/9; Docker image boots with seeded data.
+- [x] **Verification**: All 101 unit/adapter/API/smoke/regression tests pass cleanly (`pytest -v`); Playwright 10/10; Docker image boots with seeded data.
 
 ---
 
@@ -168,7 +168,7 @@ A full read-only audit was performed across core, desktop, web, packaging, docs 
 **Verdict at audit time: NOT 100%.** `pytest` was 68/68 green and CI/`vite build` passed,
 but the suite missed several release-blocking defects (single-point observation fixtures,
 no traversal/secret/pruning coverage). All P0/P1/P2 findings were fixed by
-2026-11-20 with regression tests (now 100/100); remaining non-blockers are listed
+2026-11-20 with regression tests (now 101/101); remaining non-blockers are listed
 explicitly.
 
 ### P0 — Security & correctness blockers (verified by repro)
@@ -207,6 +207,7 @@ explicitly.
 - [x] OBS `?bg=transparent` body background; map refresh preserves camera; numeric event sorting; dialog parent/Show-on-Map; event expiry reconciliation.
 - [x] Docker image builds the frontend (multi-stage) instead of trusting committed `static/`; server default port 8123.
 - [x] Docs parity: README/PLAN claims (Now cards, Aurora “dial”, SBDB links, reorder, test count, seed 32/33).
+- [x] Offline maps: desktop bundles MapLibre CSS/JS + a Natural Earth land/border style (no CDN); web keeps the CDN basemap but falls back to the same bundled outline when it is blocked.
 
 ### Known residuals (not release blockers)
 

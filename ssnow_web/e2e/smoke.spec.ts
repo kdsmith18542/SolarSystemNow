@@ -109,6 +109,19 @@ test('map tab loads a local style, renders a canvas and toggles radar', async ({
   expect(errors, `uncaught page errors: ${errors.join('; ')}`).toEqual([]);
 });
 
+test('map falls back to the bundled basemap when the CDN is unavailable', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (err) => errors.push(String(err)));
+  await page.route('https://demotiles.maplibre.org/**', (route) => route.abort());
+
+  await page.goto('/?nosse=1');
+  await page.getByRole('button', { name: /Map/ }).click();
+  await expect(page.locator('.maplibregl-canvas')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText('Loading map…')).toHaveCount(0, { timeout: 15_000 });
+  await expect(page.getByText(/Map style\/tiles unavailable/)).toHaveCount(0);
+  expect(errors, `uncaught page errors: ${errors.join('; ')}`).toEqual([]);
+});
+
 test('SSE live badge connects', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByText('● LIVE')).toBeVisible({ timeout: 15_000 });

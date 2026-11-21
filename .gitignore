@@ -21,3 +21,6 @@ packaging/SolarSystemNow.AppDir/
 .idea/
 .vscode/
 .DS_Store
+
+playwright-report/
+test-results/

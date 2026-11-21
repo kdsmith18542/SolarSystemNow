@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from ssnow_core.models import Event, Observation
+from ssnow_core.store import Store
 from conftest import load_fixture, load_json_fixture
 
 _NOW = datetime(2026, 11, 20, 21, 0, 0, tzinfo=timezone.utc)
@@ -52,6 +53,77 @@ def test_observations(tmp_store):
     latest = tmp_store.latest_observations("swpc", "swpc:kp")
     assert len(latest) == 1
     assert latest[0].value == 2.0
+
+
+def test_legacy_database_self_heals_columns(tmp_path):
+    """A database created before newer columns existed must open cleanly:
+    missing columns are added, existing rows survive, writes work."""
+    import sqlite3
+
+    db = tmp_path / "data" / "legacy.db"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE events (
+            id TEXT PRIMARY KEY, source TEXT NOT NULL, category TEXT NOT NULL,
+            title TEXT NOT NULL, occurred_at TEXT NOT NULL, latitude REAL,
+            longitude REAL, magnitude REAL, ingested_at TEXT NOT NULL
+        );
+        CREATE TABLE observations (
+            source TEXT NOT NULL, series TEXT NOT NULL, ts TEXT NOT NULL,
+            value REAL NOT NULL, unit TEXT,
+            PRIMARY KEY (source, series, ts)
+        );
+        CREATE TABLE notifications (
+            id TEXT PRIMARY KEY, category TEXT NOT NULL, title TEXT NOT NULL,
+            severity TEXT NOT NULL, fired_at TEXT NOT NULL
+        );
+        INSERT INTO events VALUES ('old-1', 'usgs', 'earthquake', 'Old quake',
+            '2026-11-19T00:00:00+00:00', 1.0, 2.0, 4.5, '2026-11-19T00:00:00+00:00');
+        INSERT INTO observations VALUES ('swpc', 'swpc:kp', '2026-11-19T00:00:00+00:00', 3.0, 'Kp');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    store = Store(db_path=db)
+    try:
+        with store.transaction() as c:
+            events_cols = {r[1] for r in c.execute("PRAGMA table_info(events)").fetchall()}
+            obs_cols = {r[1] for r in c.execute("PRAGMA table_info(observations)").fetchall()}
+            notif_cols = {r[1] for r in c.execute("PRAGMA table_info(notifications)").fetchall()}
+        assert {"upstream_id", "magnitude_unit", "raw_ref", "extra_json", "updated_at", "url", "depth_km"} <= events_cols
+        assert "extra_json" in obs_cols
+        assert {"dismissed_at", "delivered_desktop", "event_id"} <= notif_cols
+
+        # Legacy rows survive with backfilled defaults.
+        legacy = store.query_events(categories=["earthquake"], limit=10)
+        assert [e.id for e in legacy] == ["old-1"]
+        assert legacy[0].magnitude == 4.5
+        kp = store.latest_observations("swpc", "swpc:kp")
+        assert len(kp) == 1 and kp[0].value == 3.0
+
+        # New writes work end-to-end.
+        assert store.upsert_events([_event("new-1")]) == 1
+        assert store.event_count() == 2
+        store.add_notification(
+            notif_id="n1", event_id=None, category="space_weather_alert", title="Test", severity="info", fired_at=_NOW
+        )
+        pending = store.pending_notifications()
+        assert [n["id"] for n in pending] == ["n1"]
+        store.mark_notification_delivered("n1")
+        assert store.pending_notifications() == []
+
+        # Reopening is a no-op (idempotent self-heal).
+        store.close()
+        reopened = Store(db_path=db)
+        try:
+            assert reopened.event_count() == 2
+        finally:
+            reopened.close()
+    finally:
+        store.close()
 
 
 def test_snapshot_roundtrip_and_prune(tmp_store):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import json
 import os
+import re
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -126,6 +127,40 @@ CREATE TABLE IF NOT EXISTS notifications (
 CREATE INDEX IF NOT EXISTS notifications_fired ON notifications(fired_at DESC);
 """
 
+def _schema_columns() -> dict[str, list[tuple[str, str]]]:
+    """Parse SCHEMA_SQL into {table: [(column_name, column_definition), ...]}.
+
+    Used by Store._ensure_columns() to self-heal databases created before a
+    column was introduced. Constraint lines (PRIMARY KEY / FOREIGN KEY /
+    UNIQUE / CHECK) and virtual tables are skipped.
+    """
+    result: dict[str, list[tuple[str, str]]] = {}
+    for block in re.finditer(r"CREATE TABLE IF NOT EXISTS (\w+)\s*\((.*?)\n\);", SCHEMA_SQL, re.DOTALL):
+        table, body = block.group(1), block.group(2)
+        columns: list[tuple[str, str]] = []
+        depth = 0
+        current: list[str] = []
+        for line in body.splitlines():
+            stripped = line.strip()
+            depth += stripped.count("(") - stripped.count(")")
+            current.append(stripped)
+            if depth > 0:
+                continue
+            fragment = " ".join(current).rstrip(",")
+            current = []
+            if not fragment:
+                continue
+            head = fragment.split(None, 1)[0].upper()
+            if head in ("PRIMARY", "FOREIGN", "UNIQUE", "CHECK", "CONSTRAINT"):
+                continue
+            name = fragment.split(None, 1)[0]
+            definition = fragment.split(None, 1)[1].strip()
+            columns.append((name, definition))
+        if columns:
+            result[table] = columns
+    return result
+
+
 INSERT_OR_REPLACE_EVENT = """
 INSERT INTO events (
     id, source, upstream_id, category, title, description, occurred_at, updated_at,
@@ -213,6 +248,7 @@ class Store:
         for statement in PRAGMA_STATEMENTS:
             self._conn.execute(statement)
         self._conn.executescript(SCHEMA_SQL)
+        self._ensure_columns()
         row = self._conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
         if row is None:
             self._conn.execute(
@@ -226,8 +262,37 @@ class Store:
                 self.migrate(current)
         self._conn.commit()
 
+    def _ensure_columns(self) -> None:
+        """Self-heal older databases: add any table columns that exist in
+        SCHEMA_SQL but not in the physical table (CREATE TABLE IF NOT EXISTS
+        never amends existing tables). Idempotent, data-preserving."""
+        for table, columns in _schema_columns().items():
+            try:
+                existing = {row[1] for row in self._conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            except sqlite3.Error:
+                continue  # table absent -> executescript above created it
+            if not existing:
+                continue
+            for name, definition in columns:
+                if name in existing:
+                    continue
+                # ALTER TABLE ADD COLUMN rejects NOT NULL without a default;
+                # backfill a type-appropriate one (upserts always supply values).
+                if re.search(r"\bNOT NULL\b", definition) and not re.search(r"\bDEFAULT\b", definition, re.IGNORECASE):
+                    if re.search(r"\b(TEXT|CLOB|CHAR)\b", definition, re.IGNORECASE):
+                        definition = definition.rstrip() + " DEFAULT ''"
+                    else:
+                        definition = definition.rstrip() + " DEFAULT 0"
+                try:
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+                except sqlite3.OperationalError as exc:
+                    # Duplicate column from a concurrent opener is benign.
+                    if "duplicate column" not in str(exc).lower():
+                        raise
+
     def migrate(self, current_version: int) -> None:
-        """Apply versioned schema migrations in order."""
+        """Apply versioned schema migrations in order (complex/destructive
+        changes only; simple column additions are auto-healed above)."""
         _MIGRATIONS: dict[int, str] = {
             # Future migrations go here, e.g.:
             # 2: "ALTER TABLE events ADD COLUMN extra2_json TEXT;",

@@ -90,6 +90,25 @@ def test_settings_roundtrip_and_readonly():
     store.close()
 
 
+def test_remote_token_header_on_writes():
+    tokens: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        tokens.append(request.headers.get("x-ssnow-token"))
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    store = RemoteStore("http://srv:8123", client=_client(handler), token="abc-123")
+    store.set_setting("retention_days", 30)
+    assert tokens[-1] == "abc-123"
+    store.close()
+
+    # Without a token no header is sent (public-trusted servers keep working).
+    store = RemoteStore("http://srv:8123", client=_client(handler))
+    store.set_setting("retention_days", 30)
+    assert tokens[-1] is None
+    store.close()
+
+
 def test_source_states_and_stats_and_moon():
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path

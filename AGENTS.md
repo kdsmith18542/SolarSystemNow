@@ -71,7 +71,7 @@ The project is structured into three distinct layers with strict boundaries:
   - `views/`: Desktop view tabs (`now.py`, `events.py`, `map.py`, `sun.py`, `moon.py`, `neo.py`, `sources.py`, `settings.py`).
   - `views/widgets/`: Reusable Qt widgets (`sparkline.py`, `PhaseDisk`).
 - `ssnow_web/`
-  - `api.py`: FastAPI endpoints (incl. `/api/neos`, `/api/spc/outlooks`, `/api/fireballs`; `/api/sun/summary` carries bz/bt/dst/proton(10/50/100)/ssn/wind/aurora-max+oval/declination(primary loc); `/api/sun/images` (6 channels) + `/api/sim/cme-watch` (auto-fed ballistic SIM).
+  - `api.py`: FastAPI endpoints (incl. `/api/neos`, `/api/spc/outlooks`, `/api/fireballs`; `/api/sun/summary` carries bz/bt/dst/proton(10/50/100)/ssn/wind/aurora-max+oval/declination(primary loc); `/api/sun/images` (6 channels) + `/api/sim/cme-watch` (auto-fed ballistic SIM). `/api/weather/now` = per-location strip; POSTs optionally gated by `SSNOW_API_TOKEN`. CI (`.github/workflows/ci.yml`, free runners) runs pytest offscreen + web build + the no-Qt guard.
   - `server.py`: Uvicorn launcher (`ssnow-web`).
   - `src/`: React TypeScript frontend (Dashboard, Events, MapView, SunView, MoonView, NeoView, SimView).
   - `vite.config.ts`: Builds into `/media/keith/Data2/ss-now/static/`.
@@ -141,7 +141,10 @@ When querying location, always check `locations = store.get_setting("locations")
 - `ssnow_desktop` views receive either a local `Store` or a `RemoteStore` (`ssnow_core/remote.py`); both duck-type the same read API. Views must use only the portable subset: `query_events`, `get_event_by_id`, `get_series`, `latest_observations`, `get_setting`/`set_setting` (only `locations`, `tide_stations`, `nasa_api_key`, `retention_days`), `all_source_states`, `stats`, `latest_asset`, notification methods.
 - `RemoteStore` never exposes local-only methods (`upsert_events`, `export_backup`, …) — they raise. Ingest in remote mode is a server-side `POST /api/ingest`; the desktop only refreshes.
 - The NASA key is write-only over HTTP: `get_setting("nasa_api_key")` returns `""` even when one is stored, so a blank field means "keep" (SettingsView skips the POST when blank in remote mode).
-- Toggle lives in QSettings (`ssnow`/`ssnow`: `remote_mode`, `remote_base_url`) and applies on restart. Unreachable server → standalone fallback with a logged warning. Defaults: `http://localhost:8123`.
+- Toggle lives in QSettings (`ssnow`/`ssnow`: `remote_mode`, `remote_base_url`, `remote_token`) and applies on restart. Unreachable server → standalone fallback with a logged warning. Defaults: `http://localhost:8123`.
+- In remote mode the desktop subscribes to the server SSE feed (`SseListener` in `main_window.py`) and refreshes all views on `ingest_complete` — no Qt/network code in core, the listener lives in the desktop layer.
+- Write protection: `SSNOW_API_TOKEN` env on the server gates `POST /api/ingest`, `/api/settings`, `/api/sim/run` (`X-SSNOW-Token` or `Bearer`). The desktop Settings server section stores the same token (`remote_token`). GETs stay public. Locked by `test_api_write_token_gate` + `test_remote_token_header_on_writes`.
+- `query_events(bbox=...)` uses the `events_rtree` index (joined back to `events` so other filters apply); `/api/events` accepts `min_lat/max_lat/min_lon/max_lon`. `/api/weather/now` returns the per-location weather/AQ/marine strip (desktop Local Weather card parity).
 
 ### Notification System
 Use the `notifications` table to record alerts:

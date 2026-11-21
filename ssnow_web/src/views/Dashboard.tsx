@@ -60,6 +60,7 @@ export default function Dashboard() {
   const [tide, setTide] = useState<{ value: number; ts: string; station: string } | null>(null);
   const [neo, setNeo] = useState<any>(null);
   const [cme, setCme] = useState<any>(null);
+  const [wx, setWx] = useState<any[]>([]);
 
   useEffect(() => {
     api.events({ limit: 60 }).then(({ events: evs }) => setEvents(evs)).catch(() => null);
@@ -72,6 +73,7 @@ export default function Dashboard() {
       setNeo(withDist[0] ?? null);
     }).catch(() => null);
     api.cmeWatch().then(setCme).catch(() => null);
+    api.weatherNow().then(r => setWx(r.locations)).catch(() => null);
     api.settings.get().then(s => {
       const st = (s.tide_stations || [])[0];
       if (!st) return;
@@ -132,6 +134,31 @@ export default function Dashboard() {
             <div className="text-xs text-slate-400">{moon?.illumination != null ? `${(moon.illumination * 100).toFixed(0)}% illuminated` : '—'}</div>
           </div>
         </div>
+      </div>
+
+      {/* Locations: weather + air + marine (desktop Local Weather card parity) */}
+      <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+        <div className="text-[10px] uppercase tracking-[0.2em] text-slate-500 mb-3">Locations · weather · air · marine</div>
+        {wx.length === 0 ? (
+          <div className="text-sm text-slate-600">no locations configured — add one in Settings</div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            {wx.map((loc: any) => (
+              <div key={loc.name} className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+                <div className="text-sm font-bold text-slate-100 truncate">{loc.name}</div>
+                <div className="text-2xl font-extrabold text-sky-300 tabular-nums">
+                  {loc.temp_c ? `${loc.temp_c.value.toFixed(1)}°C` : '—'}
+                </div>
+                <div className="text-[11px] text-slate-400 space-y-0.5">
+                  <div>wind {loc.wind_kmh ? `${loc.wind_kmh.value.toFixed(0)} km/h` : '—'} · precip {loc.precip_pct ? `${loc.precip_pct.value.toFixed(0)}%` : '—'}</div>
+                  <div>AQI {loc.aqi ? loc.aqi.value.toFixed(0) : '—'}{loc.pm25 ? ` · PM2.5 ${loc.pm25.value.toFixed(1)}` : ''}</div>
+                  {loc.wave_m && <div>waves {loc.wave_m.value.toFixed(1)} m{loc.sst_c ? ` · SST ${loc.sst_c.value.toFixed(1)}°C` : ''}</div>}
+                </div>
+                <div className="text-[10px] text-slate-600 mt-1">{loc.temp_c ? fmt(loc.temp_c.ts) : ''} · Open-Meteo</div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Event cards: quake / neo / cme / tide */}

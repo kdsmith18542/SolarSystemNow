@@ -46,6 +46,11 @@ class SettingsView(BaseView):
         remote_note.setObjectName("faint")
         form.addRow("Server connection:", remote_row)
         form.addRow("", remote_note)
+        self.remote_token = QLineEdit()
+        self.remote_token.setEchoMode(QLineEdit.EchoMode.Password)
+        self.remote_token.setPlaceholderText("Only if the server sets SSNOW_API_TOKEN")
+        self.remote_token.setText(str(self._qsettings.value("remote_token", "") or ""))
+        form.addRow("Server write token:", self.remote_token)
 
         # Location inputs
         self.loc_name = QLineEdit()
@@ -201,6 +206,7 @@ class SettingsView(BaseView):
     def _save(self) -> None:
         self._qsettings.setValue("remote_mode", bool(self.remote_check.isChecked()))
         self._qsettings.setValue("remote_base_url", self.remote_url.text().strip() or "http://localhost:8123")
+        self._qsettings.setValue("remote_token", self.remote_token.text().strip())
         key_text = self.nasa_key.text().strip()
         # In remote mode the server never reveals the key: a blank field
         # means "keep", so only POST when the user typed something.

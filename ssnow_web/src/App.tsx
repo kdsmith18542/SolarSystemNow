@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { LayoutDashboard, List, Map, Sun, Moon, Rocket, Cloud, Settings as SettingsIcon } from 'lucide-react';
 import Dashboard from './views/Dashboard';
 import Events from './views/Events';
@@ -50,7 +50,9 @@ function DashboardShell() {
 
   // SSE live stream: server pushes ingest_complete + heartbeat.
   // EventSource reconnects natively; any successful message = connected.
+  // ?nosse=1 skips the stream (static embeds, headless capture).
   useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('nosse') === '1') return;
     const src = new EventSource('/api/stream/live');
     src.onmessage = (ev) => {
       setLive(true);

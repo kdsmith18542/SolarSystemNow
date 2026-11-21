@@ -53,9 +53,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <span class="legend-item"><span class="legend-dot" style="background:#a855f7"></span> Space/Alert</span>
   <span class="legend-item"><span class="legend-dot" style="background:#fb923c"></span> Fireball</span>
   <span class="legend-item"><span class="legend-dot" style="background:#eab308"></span> SPC</span>
+  <span class="legend-item"><span class="legend-dot" style="background:#4ade80"></span> Aurora oval</span>
 </div>
 <script>
 const geojson = %%GEOJSON%%;
+const OVAL_EDGE = %%OVAL%%;  // equatorward boundary in degrees, or null
 const CATEGORY_COLORS = {
   earthquake: '#ef4444',
   volcano: '#dc2626',
@@ -95,6 +97,13 @@ function initMap() {
       map.addSource('spc', { type: 'geojson', data: polys });
       map.addLayer({ id: 'spc-fill', type: 'fill', source: 'spc', paint: { 'fill-color': '#eab308', 'fill-opacity': 0.25 } });
       map.addLayer({ id: 'spc-line', type: 'line', source: 'spc', paint: { 'line-color': '#eab308', 'line-width': 1.5 } });
+    }
+    // OVATION aurora oval equatorward boundary: constant-latitude dashed
+    // lines in both hemispheres (oval approximation from obs, not a true oval).
+    if (OVAL_EDGE !== null && OVAL_EDGE !== undefined && !isNaN(OVAL_EDGE)) {
+      const ovalLine = (lat) => ({ type: 'Feature', properties: { title: 'OVATION aurora oval edge ≈ ' + lat.toFixed(1) + '°' }, geometry: { type: 'LineString', coordinates: [[-180, lat], [180, lat]] } });
+      map.addSource('aurora-oval', { type: 'geojson', data: { type: 'FeatureCollection', features: [ovalLine(OVAL_EDGE), ovalLine(-OVAL_EDGE)] } });
+      map.addLayer({ id: 'aurora-oval-line', type: 'line', source: 'aurora-oval', paint: { 'line-color': '#4ade80', 'line-width': 1.5, 'line-dasharray': [4, 2] } });
     }
     for (const feature of geojson.features) {
       if (!feature.geometry || feature.geometry.type !== 'Point') continue;
@@ -150,6 +159,11 @@ class MapView(BaseView):
         self._radar_box.setToolTip("Live NEXRAD mosaic overlay (US coverage, nothing stored)")
         self._radar_box.stateChanged.connect(lambda _s: self.refresh())
         toolbar.addWidget(self._radar_box)
+        self._aurora_box = QCheckBox("Aurora oval")
+        self._aurora_box.setChecked(True)
+        self._aurora_box.setToolTip("OVATION equatorward boundary (both hemispheres)")
+        self._aurora_box.stateChanged.connect(lambda _s: self.refresh())
+        toolbar.addWidget(self._aurora_box)
         self._reset_btn = QPushButton("Reset view")
         self._reset_btn.setToolTip("Back to the full-world view")
         self._reset_btn.clicked.connect(self.reset_view)
@@ -228,11 +242,17 @@ class MapView(BaseView):
         geojson = json.dumps({"type": "FeatureCollection", "features": features})
         lon, lat = self._center if self._center is not None else (20.0, 10.0)
         zoom = self._zoom if self._zoom is not None else 1.1
+        oval = None
+        if self._aurora_box is not None and self._aurora_box.isChecked():
+            oval_obs = self.store.get_series("aurora", "aurora:oval_equatorward_deg", limit=1)
+            if oval_obs:
+                oval = oval_obs[-1].value
         html = (
             HTML_TEMPLATE.replace("%%CSS%%", MAPLIBRE_CSS)
             .replace("%%JS%%", MAPLIBRE_JS)
             .replace("%%STYLE%%", MAP_STYLE)
             .replace("%%RADAR%%", "true" if (self._radar_box is not None and self._radar_box.isChecked()) else "false")
+            .replace("%%OVAL%%", f"{oval:.1f}" if oval is not None else "null")
             .replace("%%LON%%", f"{lon:.4f}")
             .replace("%%LAT%%", f"{lat:.4f}")
             .replace("%%ZOOM%%", f"{zoom:.1f}")

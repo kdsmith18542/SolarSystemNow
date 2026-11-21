@@ -44,6 +44,27 @@ def test_upsert_is_idempotent(tmp_store):
     assert tmp_store.query_events(limit=1)[0].magnitude == 5.5
 
 
+def test_bbox_query_uses_rtree(tmp_store):
+    from ssnow_core.models import Event as _Ev
+
+    def ev(eid, lat, lon):
+        return _Ev(
+            id=eid, source="usgs", upstream_id=eid, category="earthquake",
+            title=eid, occurred_at=_NOW, latitude=lat, longitude=lon, magnitude=5.0,
+        )
+
+    noloc = _Ev(
+        id="noloc", source="neows", upstream_id="x", category="neo",
+        title="noloc", occurred_at=_NOW,
+    )
+    tmp_store.upsert_events([ev("in1", 10.0, 20.0), ev("out1", -50.0, -60.0), noloc])
+    hits = tmp_store.query_events(bbox=(0.0, 30.0, 10.0, 40.0), limit=50)
+    assert sorted(e.id for e in hits) == ["in1"]
+    # Non-geo events are excluded from bbox results but appear without bbox.
+    all_ids = {e.id for e in tmp_store.query_events(limit=50)}
+    assert {"in1", "out1", "noloc"} <= all_ids
+
+
 def test_observations(tmp_store):
     obs = [
         Observation(source="swpc", series="swpc:kp", ts=_NOW, value=2.0, unit="Kp"),

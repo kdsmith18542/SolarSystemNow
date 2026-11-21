@@ -382,11 +382,15 @@ class Store:
             conditions.append("magnitude IS NOT NULL AND magnitude >= ?")
             params.append(min_magnitude)
         if bbox:
-            min_lat, min_lon, max_lat, max_lon = bbox
+            min_lat, max_lat, min_lon, max_lon = bbox
+            # Prefer the R-tree for map-viewport queries (only geolocated events
+            # are indexed there). Rows are joined back to events by rowid, so
+            # all other filters still apply.
             conditions.append(
-                "latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ?"
+                "events.rowid IN (SELECT rowid FROM events_rtree "
+                "WHERE min_lat <= ? AND max_lat >= ? AND min_lon <= ? AND max_lon >= ?)"
             )
-            params.extend([min_lat, max_lat, min_lon, max_lon])
+            params.extend([max_lat, min_lat, max_lon, min_lon])
 
         sql = f"SELECT * FROM events WHERE {' AND '.join(conditions)} ORDER BY occurred_at DESC LIMIT ?"
         params.append(limit)

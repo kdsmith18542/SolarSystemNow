@@ -10,8 +10,10 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDoubleSpinBox,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QSpinBox,
     QTableWidget,
@@ -171,6 +173,9 @@ class EventsView(BaseView):
         self.mag_spin.setSuffix(" M")
         self.apply_btn = QPushButton("Apply")
         self.apply_btn.clicked.connect(self.refresh)
+        self.export_btn = QPushButton("Export CSV")
+        self.export_btn.setToolTip("Export the currently loaded events to CSV")
+        self.export_btn.clicked.connect(self._export_csv)
         toolbar.addWidget(QLabel("Category:"))
         toolbar.addWidget(self.category_combo)
         toolbar.addWidget(QLabel("Within:"))
@@ -178,6 +183,7 @@ class EventsView(BaseView):
         toolbar.addWidget(QLabel("Min magnitude:"))
         toolbar.addWidget(self.mag_spin)
         toolbar.addWidget(self.apply_btn)
+        toolbar.addWidget(self.export_btn)
         toolbar.addStretch(1)
         layout.addLayout(toolbar)
 
@@ -242,3 +248,27 @@ class EventsView(BaseView):
         event = item.data(Qt.ItemDataRole.UserRole)
         dlg = DetailDialog(event, self)
         dlg.exec()
+
+    def _export_csv(self) -> None:
+        import csv
+
+        dest, _ = QFileDialog.getSaveFileName(self, "Export events to CSV", "ssnow-events.csv", "*.csv")
+        if not dest:
+            return
+        try:
+            with open(dest, "w", newline="", encoding="utf-8") as fh:
+                writer = csv.writer(fh)
+                writer.writerow(["id", "source", "category", "title", "occurred_at", "latitude", "longitude", "magnitude", "magnitude_unit", "url"])
+                for row in range(self.table.rowCount()):
+                    event = self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+                    writer.writerow(
+                        [
+                            event.id, event.source, event.category, event.title,
+                            fmt_ts(event.occurred_at), event.latitude, event.longitude,
+                            event.magnitude, event.magnitude_unit, event.url,
+                        ]
+                    )
+        except OSError as exc:
+            QMessageBox.warning(self, "Export failed", str(exc))
+            return
+        QMessageBox.information(self, "Export", f"Exported {self.table.rowCount()} events to {dest}")

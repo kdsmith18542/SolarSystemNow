@@ -45,10 +45,12 @@ export default function MapView() {
   const [mapReady, setMapReady] = useState(false);
   const [enabled, setEnabled] = useState<Record<string, boolean>>({ quake: true, volcano_fire: true, storm: true, severe: true, fireball: true, space: true, other: false });
   const [radar, setRadar] = useState(false);
+  const [auroraOval, setAuroraOval] = useState(true);
   const containerRef = useRef<HTMLDivElement>(null);
   const markersRef = useRef<Marker[]>([]);
   const mapRef = useRef<Map | null>(null);
   const eventsRef = useRef<Event[]>([]);
+  const ovalRef = useRef<number | null>(null);
 
   const drawMarkers = () => {
     const map = mapRef.current;
@@ -61,6 +63,31 @@ export default function MapView() {
       if (map.getLayer('spc-line')) map.removeLayer('spc-line');
       if (map.getSource('spc')) map.removeSource('spc');
     } catch { /* ignore */ }
+    // Clear previous aurora oval layer.
+    try {
+      if (map.getLayer('aurora-oval-line')) map.removeLayer('aurora-oval-line');
+      if (map.getSource('aurora-oval')) map.removeSource('aurora-oval');
+    } catch { /* ignore */ }
+    // OVATION aurora oval equatorward boundary (constant-latitude line per
+    // hemisphere — the oval approximation carried in obs, not a true oval).
+    const edge = ovalRef.current;
+    if (auroraOval && edge != null && (map as any).addSource) {
+      try {
+        const line = (lat: number) => ({
+          type: 'Feature' as const,
+          properties: { title: `OVATION aurora oval edge ≈ ${lat.toFixed(1)}°` },
+          geometry: { type: 'LineString' as const, coordinates: [[-180, lat], [180, lat]] },
+        });
+        (map as any).addSource('aurora-oval', {
+          type: 'geojson',
+          data: { type: 'FeatureCollection', features: [line(edge), line(-edge)] },
+        });
+        map.addLayer({
+          id: 'aurora-oval-line', type: 'line', source: 'aurora-oval',
+          paint: { 'line-color': '#4ade80', 'line-width': 1.5, 'line-dasharray': [4, 2] },
+        } as any);
+      } catch { /* ignore if style not ready */ }
+    }
     const active = new Set<string>();
     LAYERS.filter((l) => enabled[l.id]).forEach((l) => l.categories.forEach((c) => active.add(c)));
     // SPC outlook polygons as translucent fills.
@@ -118,6 +145,12 @@ export default function MapView() {
         eventsRef.current = evs;
         drawMarkers();
       });
+      api.obs('aurora', 'aurora:oval_equatorward_deg', 1).then((r) => {
+        if (r.points[0]) {
+          ovalRef.current = r.points[0].value;
+          drawMarkers();
+        }
+      }).catch(() => null);
     });
     return () => {
       markersRef.current.forEach((m) => m.remove());
@@ -131,7 +164,7 @@ export default function MapView() {
   useEffect(() => {
     drawMarkers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, radar]);
+  }, [enabled, radar, auroraOval]);
 
   return (
     <div className="flex-1 bg-slate-900 relative">
@@ -152,6 +185,10 @@ export default function MapView() {
         <label className="flex items-center gap-2 text-slate-200 cursor-pointer hover:text-white border-t border-slate-700 pt-1.5 mt-1">
           <input type="checkbox" checked={radar} onChange={() => setRadar((v) => !v)} className="accent-blue-500" />
           Radar (IEM, US)
+        </label>
+        <label className="flex items-center gap-2 text-slate-200 cursor-pointer hover:text-white">
+          <input type="checkbox" checked={auroraOval} onChange={() => setAuroraOval((v) => !v)} className="accent-blue-500" />
+          Aurora oval (OVATION edge)
         </label>
         <div className="text-[10px] text-slate-500 pt-1">NEOs are space objects — see Asteroids tab.</div>
       </div>

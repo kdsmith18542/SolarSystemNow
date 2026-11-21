@@ -148,6 +148,17 @@ export const api = {
   sunSummary: () => json<SunSummary>("/sun/summary"),
   obs: (source: string, series: string, limit?: number) =>
     json<{ source: string; series: string; unit: string | null; count: number; points: Array<{ ts: string; value: number; extra: any }> }>(`/obs?source=${encodeURIComponent(source)}&series=${encodeURIComponent(series)}&limit=${limit ?? 120}`),
+  weatherNow: () =>
+    json<{ count: number; locations: Array<{
+      name: string; lat: number | null; lon: number | null;
+      temp_c: { value: number; unit: string | null; ts: string } | null;
+      wind_kmh: { value: number; unit: string | null; ts: string } | null;
+      precip_pct: { value: number; unit: string | null; ts: string } | null;
+      aqi: { value: number; unit: string | null; ts: string } | null;
+      pm25: { value: number; unit: string | null; ts: string } | null;
+      wave_m: { value: number; unit: string | null; ts: string } | null;
+      sst_c: { value: number; unit: string | null; ts: string } | null;
+    }> }>('/weather/now'),
   neos: (limit?: number) =>
     json<{ count: number; pha: number; inside_moon: number; comets: number; neos: Array<{ id: string; name: string; kind: string; is_comet: boolean; hazardous: boolean; approach_at: string | null; dist_lunar: number | null; dist_km: number | null; velocity_km_s: number | null; h: number | null; diameter_km: number | null; url: string | null; source: string }> }>(`/neos?limit=${limit ?? 200}`),
   spcOutlooks: (limit?: number) =>

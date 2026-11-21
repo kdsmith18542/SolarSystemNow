@@ -2,6 +2,15 @@
 
 Linux desktop + local web dashboard for reviewing **current and historical real data** about Earth and its solar neighborhood: earthquakes, tsunamis, volcanoes, storms, wildfires, floods, weather, tides, space weather (Kp, solar wind, IMF Bz, flares, protons, Dst), the Sun (SDO/LASCO imagery), the Moon, and near-Earth asteroids, comets, fireballs and impact risk. No fabricated data, no server required, no hosting costs.
 
+![Desktop Now view](docs/screenshots/desktop-now.png)
+*Desktop: composite threat dial, Kp/Bz/proton/Dst cards, aurora verdict, quake + CME watch, Kp trend.*
+
+![Web dashboard](docs/screenshots/web-dashboard.png)
+*Web dashboard: same live data — threat hero, solar-wind/aurora metrics, per-location weather, event table with category chips.*
+
+![OBS stream overlay](docs/screenshots/web-stream.png)
+*`/stream`: chrome-free OBS browser-source overlay (`?compact=1`, `?bg=transparent`).*
+
 ## Architecture
 
 - `ssnow_core/` — pure-Python library: 32 ingestion adapters, SQLite store (WAL + R-Tree + notifications), scheduler, deterministic physics sims, CLI. No Qt imports (enforced by test).
@@ -52,6 +61,8 @@ Run `ssnow-web` on a home server/NAS and point the desktop at it:
 3. Ingest now happens server-side (`POST /api/ingest`); the desktop reads over HTTP and shows `(remote server)` in the title.
 
 If the server is unreachable at startup the desktop falls back to standalone with a logged warning. The NASA key never leaves the server; leaving the key field blank keeps the stored one. Backup export is standalone-only.
+
+Set `SSNOW_API_TOKEN` on the server to require a write token for `POST /api/ingest`, `/api/settings` and `/api/sim/run` (header `X-SSNOW-Token` or `Authorization: Bearer …`); paste the same token into the desktop Settings server section. GETs always stay public. In remote mode the desktop also follows the server's SSE live stream, so it refreshes the moment an ingest finishes.
 
 ## Self-hosting (Docker)
 

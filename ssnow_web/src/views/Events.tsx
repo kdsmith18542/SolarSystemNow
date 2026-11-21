@@ -24,6 +24,25 @@ export default function Events() {
   });
   const arrow = (key: 'time' | 'mag') => (sort.key === key ? (sort.dir === 1 ? ' ▲' : ' ▼') : '');
 
+  const exportCsv = () => {
+    const cols = ['id', 'source', 'category', 'title', 'occurred_at', 'latitude', 'longitude', 'magnitude', 'magnitude_unit', 'url'];
+    const esc = (v: unknown) => {
+      if (v == null) return '';
+      const s = String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const lines = [cols.join(',')];
+    for (const e of sorted) {
+      lines.push([e.id, e.source, e.category, e.title, e.occurred_at, e.latitude, e.longitude, e.magnitude, e.magnitude_unit, e.url].map(esc).join(','));
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `ssnow-events-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
   const load = async () => {
     setLoading(true);
     try {
@@ -49,6 +68,7 @@ export default function Events() {
         <input type="number" value={mag} onChange={(e) => setMag(Math.max(0, Number(e.target.value) || 0))} className="w-20 bg-slate-800 border border-slate-700 rounded px-3 py-1.5 text-sm text-slate-200 focus:ring-2 focus:ring-blue-500 outline-none" />
         <button onClick={load} className="bg-blue-600 hover:bg-blue-500 px-4 py-1.5 rounded text-sm font-medium">Apply</button>
         <button onClick={() => api.ingest().then(() => load())} className="bg-slate-700 hover:bg-slate-600 px-4 py-1.5 rounded text-sm font-medium text-slate-200">Ingest</button>
+        <button onClick={exportCsv} className="bg-slate-700 hover:bg-slate-600 px-4 py-1.5 rounded text-sm font-medium text-slate-200">Export CSV</button>
         {loading && <span className="ml-2 text-xs text-slate-400 animate-pulse">loading…</span>}
       </div>
       <div className="bg-slate-900/50 rounded-xl border border-slate-800 overflow-hidden">

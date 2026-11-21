@@ -56,7 +56,9 @@ class IngestWorker(QObject):
         if self.remote_base:
             # Remote mode: the server ingests; the desktop just refreshes.
             try:
-                resp = httpx.post(f"{self.remote_base}/api/ingest", timeout=120.0)
+                token = (getattr(self.store, "token", None) or "").strip()
+                headers = {"X-SSNOW-Token": token} if token else None
+                resp = httpx.post(f"{self.remote_base}/api/ingest", headers=headers, timeout=120.0)
                 resp.raise_for_status()
                 summary = resp.json().get("summary", {})
                 self.finished.emit([_RemoteReport(summary)])
@@ -79,6 +81,65 @@ class _RemoteReport:
         self.summary = summary
 
 
+class SseListener(QThread):
+    """Background SSE subscriber for remote-server mode.
+
+    Listens to the server's /api/stream/live feed and emits `ingest_ready`
+    whenever the server finishes an ingest cycle, so the desktop refreshes
+    in sync with the web client instead of waiting for its 15-minute timer.
+    Reconnects with backoff on disconnect; harmless against token-gated
+    servers (SSE is GET-only, always public).
+    """
+
+    ingest_ready = Signal(dict)
+
+    def __init__(self, base_url: str, parent=None) -> None:
+        super().__init__(parent)
+        self._base = base_url.rstrip("/")
+        self._stop = False
+
+    def stop(self) -> None:
+        self._stop = True
+
+    def run(self) -> None:  # noqa: C901
+        import json as _json
+
+        import httpx
+
+        backoff = 5.0
+        while not self._stop:
+            try:
+                with httpx.stream("GET", f"{self._base}/api/stream/live", timeout=httpx.Timeout(60.0, connect=10.0)) as resp:
+                    resp.raise_for_status()
+                    backoff = 5.0
+                    data_lines: list[str] = []
+                    for line in resp.iter_lines():
+                        if self._stop:
+                            return
+                        if not line:
+                            if data_lines:
+                                payload = "\n".join(data_lines)
+                                data_lines = []
+                                try:
+                                    msg = _json.loads(payload)
+                                except Exception:
+                                    continue
+                                if isinstance(msg, dict) and msg.get("type") == "ingest_complete":
+                                    self.ingest_ready.emit(msg)
+                            continue
+                        if line.startswith("data:"):
+                            data_lines.append(line[5:].strip())
+            except Exception as exc:  # noqa: BLE001
+                if self._stop:
+                    return
+                logger.warning("SSE listener disconnected (%s); retry in %.0fs", exc, backoff)
+                for _ in range(int(backoff * 2)):
+                    if self._stop:
+                        return
+                    self.msleep(500)
+                backoff = min(backoff * 2.0, 300.0)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -94,7 +155,8 @@ class MainWindow(QMainWindow):
 
                 probe = httpx.get(f"{self.remote_base.rstrip('/')}/api/health", timeout=10.0)
                 probe.raise_for_status()
-                self.store = RemoteStore(self.remote_base)
+                self.remote_token = str(settings.value("remote_token", "") or "")
+                self.store = RemoteStore(self.remote_base, token=self.remote_token or None)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Remote server %s unreachable (%s); falling back to standalone", self.remote_base, exc)
                 self.remote_mode = False
@@ -224,6 +286,14 @@ class MainWindow(QMainWindow):
         self._stream_clock.setInterval(1000)
         self._stream_clock.timeout.connect(self._tick_stream_banner)
         self._stream_clock.start()
+
+        # Remote mode: push-refresh via SSE instead of relying solely on the
+        # 15-minute timer — this desktop follows server ingest cycles live.
+        self._sse: SseListener | None = None
+        if self.remote_mode:
+            self._sse = SseListener(self.remote_base, self)
+            self._sse.ingest_ready.connect(self._on_server_ingest)
+            self._sse.start()
 
     def _tick_stream_banner(self) -> None:
         if self._streamer_mode:
@@ -396,6 +466,23 @@ class MainWindow(QMainWindow):
         if self._streamer_mode:
             self._update_stream_banner()
 
+    def _on_server_ingest(self, msg: dict) -> None:
+        """Server pushed an ingest_complete event (SSE): refresh this desktop."""
+        summary = msg.get("summary", {}) if isinstance(msg, dict) else {}
+        ok, fail = summary.get("ok", "?"), summary.get("failed", "?")
+        events, obs = summary.get("events", "?"), summary.get("observations", "?")
+        self.status_label.setText(
+            f"Live: server ingested {ok} sources ok, {fail} failed — {events} events, {obs} observations"
+        )
+        for i, view in enumerate(self.views):
+            try:
+                view.refresh()
+            except Exception as exc:
+                logger.warning("View %d refresh failed after server ingest: %s", i, exc)
+        self._check_and_notify_alerts()
+        if self._streamer_mode:
+            self._update_stream_banner()
+
     def _check_and_notify_alerts(self) -> None:
         try:
             from datetime import datetime, timezone
@@ -533,6 +620,12 @@ class MainWindow(QMainWindow):
         try:
             if hasattr(self, "_refresh_timer"):
                 self._refresh_timer.stop()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "_sse", None) is not None:
+                self._sse.stop()
+                self._sse.wait(3000)
         except Exception:
             pass
         try:

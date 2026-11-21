@@ -51,6 +51,59 @@ def test_api_sun_summary(client):
     assert "f107" in data
 
 
+def test_api_write_token_gate(client, monkeypatch):
+    """Without SSNOW_API_TOKEN all endpoints are open. With it set, POSTs
+    require the token while GETs stay public."""
+    # Open by default.
+    res = client.post("/api/settings", json={"retention_days": 42})
+    assert res.status_code == 200
+
+    monkeypatch.setenv("SSNOW_API_TOKEN", "secret-1")
+    # Blocked without a token...
+    assert client.post("/api/settings", json={"retention_days": 7}).status_code == 403
+    assert client.post("/api/sim/run", json={"id": "flare_arrival", "params": {}}).status_code == 403
+    assert client.post("/api/ingest").status_code == 403
+    # ...allowed with X-SSNOW-Token or Bearer, GETs always public.
+    assert client.post("/api/settings", json={"retention_days": 7}, headers={"X-SSNOW-Token": "secret-1"}).status_code == 200
+    assert client.post("/api/settings", json={"retention_days": 7}, headers={"Authorization": "Bearer secret-1"}).status_code == 200
+    assert client.post("/api/settings", json={"retention_days": 7}, headers={"X-SSNOW-Token": "wrong"}).status_code == 403
+    assert client.get("/api/events").status_code == 200
+    assert client.get("/api/sun/summary").status_code == 200
+
+
+def test_api_weather_now(client):
+    res = client.get("/api/weather/now")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["count"] == 0 and data["locations"] == []
+
+    store = get_store()
+    from datetime import datetime, timezone
+
+    from ssnow_core.models import Observation
+
+    NOW = datetime.now(timezone.utc)
+    store.set_setting("locations", [{"name": "Home", "lat": 40.71, "lon": -74.01, "key": "40.71,-74.01"}])
+    store.upsert_observations(
+        [
+            Observation(source="openmeteo", series="weather:40.71,-74.01:temperature_2m", ts=NOW, value=18.5, unit="°C"),
+            Observation(source="openmeteo", series="weather:40.71,-74.01:wind_speed_10m", ts=NOW, value=22.0, unit="km/h"),
+            Observation(source="openmeteo", series="air:40.71,-74.01:us_aqi", ts=NOW, value=35.0, unit="USAQI"),
+            Observation(source="openmeteo", series="marine:40.71,-74.01:wave_height", ts=NOW, value=1.2, unit="m"),
+        ]
+    )
+    res2 = client.get("/api/weather/now")
+    data2 = res2.json()
+    assert data2["count"] == 1
+    row = data2["locations"][0]
+    assert row["name"] == "Home"
+    assert row["temp_c"]["value"] == pytest.approx(18.5)
+    assert row["wind_kmh"]["value"] == pytest.approx(22.0)
+    assert row["aqi"]["value"] == pytest.approx(35.0)
+    assert row["wave_m"]["value"] == pytest.approx(1.2)
+    assert row["sst_c"] is None
+
+
 def test_api_sun_summary_new_fields(client):
     """Extended summary fields (proton channels, wind, aurora oval, declination)
     must always be present — null when no data, never fabricated."""

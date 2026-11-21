@@ -22,6 +22,10 @@ services:
       SSNOW_DATA_DIR: /data/ssnow
       SSNOW_CONFIG_DIR: /data/ssnow-config
       SSNOW_CACHE_DIR: /data/ssnow-cache
+      # Optional: require a write token for POST /api/ingest, /api/settings,
+      # /api/sim/run. Set the same value in the desktop Settings (server
+      # connection) when enabled. Leave empty for trusted localhost use.
+      # SSNOW_API_TOKEN: "change-me"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8123/api/health')"]
       interval: 60s

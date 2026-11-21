@@ -50,6 +50,26 @@ def get_store() -> Store:
     return _store
 
 
+def _require_write_token(request: Request) -> None:
+    """Optional write protection for POST endpoints.
+
+    When the server runs with SSNOW_API_TOKEN set (e.g. port-forwarded or
+    hosted for other clients), every POST must carry the token in either
+    the `X-SSNOW-Token` header or an `Authorization: Bearer <token>` header.
+    Unset token (default localhost use) keeps all endpoints open.
+    GETs always stay public: they expose only public upstream data.
+    """
+    expected = (os.environ.get("SSNOW_API_TOKEN") or "").strip()
+    if not expected:
+        return
+    supplied = request.headers.get("x-ssnow-token", "").strip()
+    auth = request.headers.get("authorization", "").strip()
+    if auth.lower().startswith("bearer "):
+        supplied = auth[7:].strip()
+    if supplied != expected:
+        raise HTTPException(status_code=403, detail="write token required")
+
+
 @app.on_event("startup")
 def _startup() -> None:
     seed_if_empty(get_store())
@@ -102,17 +122,25 @@ def list_events(
     categories: str | None = Query(default=None),
     min_magnitude: float | None = Query(default=None),
     limit: int = Query(default=500, le=5000),
+    min_lat: float | None = Query(default=None),
+    max_lat: float | None = Query(default=None),
+    min_lon: float | None = Query(default=None),
+    max_lon: float | None = Query(default=None),
 ) -> dict[str, Any]:
     store = get_store()
     start_dt = datetime.fromisoformat(start) if start else None
     end_dt = datetime.fromisoformat(end) if end else None
     cat_list = [c.strip() for c in categories.split(",")] if categories else None
+    bbox = None
+    if min_lat is not None and max_lat is not None and min_lon is not None and max_lon is not None:
+        bbox = (min_lat, max_lat, min_lon, max_lon)
     events = store.query_events(
         start=start_dt,
         end=end_dt,
         categories=cat_list,
         min_magnitude=min_magnitude,
         limit=limit,
+        bbox=bbox,
     )
     return {"count": len(events), "events": [_event_to_dict(e) for e in events]}
 
@@ -234,6 +262,44 @@ def sun_kp(
 def moon_state() -> dict[str, Any]:
     store = get_store()
     return store.get_setting("moon_state") or {}
+
+
+@app.get("/api/weather/now")
+def weather_now() -> dict[str, Any]:
+    """Latest per-location weather/AQ/marine snapshot in one call.
+
+    Returns one row per configured location (desktop Local Weather card
+    parity): temperature, wind, precipitation probability, AQI, PM2.5 and
+    marine wave height/SST when available for coastal keys.
+    """
+    store = get_store()
+    locations = store.get_setting("locations") or []
+    rows: list[dict[str, Any]] = []
+
+    def latest(series: str) -> dict[str, Any] | None:
+        obs = store.get_series("openmeteo", series, limit=1)
+        if not obs:
+            return None
+        o = obs[-1]
+        return {"value": o.value, "unit": o.unit, "ts": o.ts.isoformat()}
+
+    for loc in locations:
+        key = loc.get("key") or f"{loc.get('lat')},{loc.get('lon')}"
+        rows.append(
+            {
+                "name": loc.get("name", key),
+                "lat": loc.get("lat"),
+                "lon": loc.get("lon"),
+                "temp_c": latest(f"weather:{key}:temperature_2m"),
+                "wind_kmh": latest(f"weather:{key}:wind_speed_10m"),
+                "precip_pct": latest(f"weather:{key}:precipitation_probability"),
+                "aqi": latest(f"air:{key}:us_aqi"),
+                "pm25": latest(f"air:{key}:pm2_5"),
+                "wave_m": latest(f"marine:{key}:wave_height"),
+                "sst_c": latest(f"marine:{key}:sea_surface_temperature"),
+            }
+        )
+    return {"count": len(rows), "locations": rows}
 
 
 @app.get("/api/weather/{series_id}")
@@ -412,7 +478,8 @@ async def sse_live(request: Request):
 
 
 @app.post("/api/ingest")
-async def ingest() -> dict[str, Any]:
+async def ingest(request: Request) -> dict[str, Any]:
+    _require_write_token(request)
     import httpx
 
     store = get_store()
@@ -468,7 +535,8 @@ def get_settings() -> dict[str, Any]:
 
 
 @app.post("/api/settings")
-def set_settings(body: dict[str, Any]) -> dict[str, Any]:
+def set_settings(body: dict[str, Any], request: Request) -> dict[str, Any]:
+    _require_write_token(request)
     store = get_store()
     if "locations" in body:
         store.set_setting("locations", body["locations"])
@@ -511,7 +579,8 @@ def list_sim_scenarios() -> dict[str, Any]:
 
 
 @app.post("/api/sim/run")
-def run_sim(body: dict[str, Any]) -> dict[str, Any]:
+def run_sim(body: dict[str, Any], request: Request) -> dict[str, Any]:
+    _require_write_token(request)
     sim_id = body.get("id")
     params = body.get("params", {}) or {}
     cls = get_scenario(sim_id)

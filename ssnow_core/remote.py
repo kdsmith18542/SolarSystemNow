@@ -43,9 +43,10 @@ class RemoteStore:
 
     is_remote = True
 
-    def __init__(self, base_url: str, timeout: float = 30.0, client: httpx.Client | None = None) -> None:
+    def __init__(self, base_url: str, timeout: float = 30.0, client: httpx.Client | None = None, token: str | None = None) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.token = (token or "").strip() or None
         self._client = client or httpx.Client(
             base_url=self.base_url,
             timeout=timeout,
@@ -68,6 +69,16 @@ class RemoteStore:
             return resp.json()
         except Exception as exc:  # noqa: BLE001
             logger.warning("Remote GET %s failed: %s", path, exc)
+            raise
+
+    def _post(self, path: str, payload: dict[str, Any]) -> Any:
+        headers = {"X-SSNOW-Token": self.token} if self.token else None
+        try:
+            resp = self._client.post(path, json=payload, headers=headers, timeout=self.timeout)
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPStatusError as exc:
+            logger.warning("Remote POST %s -> %s", path, exc.response.status_code)
             raise
 
     # -- events ------------------------------------------------------------
@@ -172,8 +183,7 @@ class RemoteStore:
         if key not in WRITABLE_SETTINGS:
             raise RemoteReadOnlyError(f"setting '{key}' is not writable in remote mode")
         try:
-            resp = self._client.post("/api/settings", json={key: value}, timeout=self.timeout)
-            resp.raise_for_status()
+            self._post("/api/settings", {key: value})
         except Exception as exc:  # noqa: BLE001
             logger.warning("Remote POST /api/settings failed: %s", exc)
             raise

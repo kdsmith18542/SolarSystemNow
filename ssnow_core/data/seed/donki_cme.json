@@ -1,0 +1,36 @@
+[
+  {
+    "activityID": "2026-10-20T01:26:00-CME-001",
+    "catalog": "M2M_CATALOG",
+    "startTime": "2026-10-20T01:26Z",
+    "instruments": [
+      {"displayName": "SOHO: LASCO/C2"},
+      {"displayName": "GOES: CCOR-1"}
+    ],
+    "sourceLocation": "",
+    "activeRegionNum": null,
+    "note": "CME first seen to the NNW in SOHO LASCO C2 starting at 2026-10-20T01:26Z.",
+    "cmeAnalyses": [
+      {
+        "isMostAccurate": true,
+        "levelOfData": 0,
+        "time21_5": "2026-10-20T10:15Z",
+        "latitude": 25.0,
+        "longitude": 172.0,
+        "halfAngle": 28.0,
+        "speed": 368.0,
+        "type": "S",
+        "featureCode": "LE",
+        "imageType": "running difference",
+        "measurementTechnique": "SWPC_CAT",
+        "note": "Measurement based on best fit among SOHO LASCO C2/C3, GOES CCOR-1, and STEREO A COR2.",
+        "link": "https://ccmc.gsfc.nasa.gov/DONKI/view/CMEAnalysis/49174/-1",
+        "enlilList": []
+      }
+    ],
+    "linkedEvents": null,
+    "submissionTime": "2026-10-20T12:09Z",
+    "link": "https://ccmc.gsfc.nasa.gov/DONKI/view/CME/49173/-1",
+    "versionId": 1
+  }
+]

@@ -1,0 +1,5 @@
+[
+  {"time_tag": "2026-11-20T20:00:00", "frequency": 2800, "flux": 1.030000000000000e+002, "reporting_schedule": "Noon", "avg_begin_date": "2026-08-23T20:00:00", "ninety_day_mean": 1.110000000000000e+002, "rec_count": 90},
+  {"time_tag": "2026-11-20T17:00:00", "frequency": 2800, "flux": 1.110000000000000e+002, "reporting_schedule": "Morning", "avg_begin_date": null, "ninety_day_mean": null, "rec_count": null},
+  {"time_tag": "2026-11-19T22:00:00", "frequency": 2800, "flux": 1.060000000000000e+002, "reporting_schedule": "Afternoon", "avg_begin_date": null, "ninety_day_mean": null, "rec_count": null}
+]

@@ -1,0 +1,8 @@
+{
+  "result": [
+    {"date": 2026.8849, "declination": 1.23079, "latitude": 51.5, "declination_sv": 0.17051, "declination_uncertainty": 0.37989, "longitude": -0.12}
+  ],
+  "model": "WMM-2025",
+  "units": {"declination": "degrees"},
+  "version": "1.2.1"
+}

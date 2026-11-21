@@ -1,0 +1,27 @@
+{
+  "element_count": 1,
+  "near_earth_objects": {
+    "2026-11-20": [
+      {
+        "absolute_magnitude_h": 23.0,
+        "close_approach_data": [
+          {
+            "close_approach_date": "2026-11-20",
+            "close_approach_date_full": "2026-Nov-20 00:03",
+            "epoch_date_close_approach": 1795132980000,
+            "miss_distance": {"astronomical": "0.0600399858", "kilometers": "8981853.990510246", "lunar": "23.3555544762", "miles": "5581065.2722675548"},
+            "orbiting_body": "Earth",
+            "relative_velocity": {"kilometers_per_hour": "71399.9712534239", "kilometers_per_second": "19.8333253482", "miles_per_hour": "44365.1654713289"}
+          }
+        ],
+        "estimated_diameter": {"kilometers": {"estimated_diameter_max": 0.1492931834, "estimated_diameter_min": 0.0667659413}},
+        "id": "3892309",
+        "is_potentially_hazardous_asteroid": false,
+        "is_sentry_object": false,
+        "name": "(2019 VF1)",
+        "nasa_jpl_url": "https://ssd.jpl.nasa.gov/tools/sbdb_lookup.html#/?sstr=3892309",
+        "neo_reference_id": "3892309"
+      }
+    ]
+  }
+}

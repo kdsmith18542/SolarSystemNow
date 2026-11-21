@@ -1,0 +1,63 @@
+{
+  "type": "FeatureCollection",
+  "metadata": {"count": 3},
+  "features": [
+    {
+      "type": "Feature",
+      "id": "us6000ucd6",
+      "properties": {
+        "mag": 5.1,
+        "place": "32 km NE of Port-Olry, Vanuatu",
+        "time": 1795197195442,
+        "updated": 1795198273040,
+        "url": "https://earthquake.usgs.gov/earthquakes/eventpage/us6000ucd6",
+        "tsunami": 0,
+        "alert": null,
+        "magType": "mb",
+        "status": "reviewed",
+        "sig": 400,
+        "felt": null,
+        "title": "M 5.1 - 32 km NE of Port-Olry, Vanuatu"
+      },
+      "geometry": {"type": "Point", "coordinates": [167.29, -14.835, 94.53]}
+    },
+    {
+      "type": "Feature",
+      "id": "us6000uc9c",
+      "properties": {
+        "mag": 4.7,
+        "place": "94 km W of Illapel, Chile",
+        "time": 1795184175225,
+        "updated": 1795186447040,
+        "url": "https://earthquake.usgs.gov/earthquakes/eventpage/us6000uc9c",
+        "tsunami": 0,
+        "alert": null,
+        "magType": "mb",
+        "status": "reviewed",
+        "sig": 340,
+        "felt": null,
+        "title": "M 4.7 - 94 km W of Illapel, Chile"
+      },
+      "geometry": {"type": "Point", "coordinates": [-72.1485, -31.7842, 10]}
+    },
+    {
+      "type": "Feature",
+      "id": "nc75468702",
+      "properties": {
+        "mag": 5.0,
+        "place": "10 km NW of Pinnacles, CA",
+        "time": 1795157356530,
+        "updated": 1795208609459,
+        "url": "https://earthquake.usgs.gov/earthquakes/eventpage/nc75468702",
+        "tsunami": 1,
+        "alert": "green",
+        "magType": "mw",
+        "status": "reviewed",
+        "sig": 1002,
+        "felt": 3684,
+        "title": "M 5.0 - 10 km NW of Pinnacles, CA"
+      },
+      "geometry": {"type": "Point", "coordinates": [-121.220664978027, 36.5934982299805, 6.69999980926514]}
+    }
+  ]
+}

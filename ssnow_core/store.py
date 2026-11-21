@@ -1,0 +1,872 @@
+"""SQLite-backed storage layer."""
+
+from __future__ import annotations
+
+import gzip
+import json
+import os
+import sqlite3
+import threading
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Iterator
+
+from .config import (
+    default_asset_dir,
+    default_db_path,
+    default_snapshot_dir,
+)
+from .models import Event, EVENT_LIMIT, Observation, SnapshotRecord, SourceState
+
+PRAGMA_STATEMENTS = (
+    "PRAGMA journal_mode=WAL",
+    "PRAGMA synchronous=NORMAL",
+    "PRAGMA foreign_keys=ON",
+)
+
+SCHEMA_VERSION = 1
+
+SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS events (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    upstream_id TEXT NOT NULL,
+    category TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT,
+    occurred_at TEXT NOT NULL,
+    updated_at TEXT,
+    latitude REAL,
+    longitude REAL,
+    depth_km REAL,
+    magnitude REAL,
+    magnitude_unit TEXT,
+    url TEXT,
+    raw_ref TEXT,
+    extra_json TEXT NOT NULL DEFAULT '{}',
+    ingested_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS events_time ON events(occurred_at DESC);
+CREATE INDEX IF NOT EXISTS events_category ON events(category);
+CREATE INDEX IF NOT EXISTS events_geo ON events(latitude, longitude);
+CREATE INDEX IF NOT EXISTS events_source_time ON events(source, occurred_at DESC);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS events_rtree USING rtree(
+    rowid,
+    min_lat, max_lat,
+    min_lon, max_lon
+);
+
+CREATE TABLE IF NOT EXISTS observations (
+    source TEXT NOT NULL,
+    series TEXT NOT NULL,
+    ts TEXT NOT NULL,
+    value REAL NOT NULL,
+    unit TEXT,
+    extra_json TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (source, series, ts)
+);
+CREATE INDEX IF NOT EXISTS observations_series_ts ON observations(source, series, ts DESC);
+
+CREATE TABLE IF NOT EXISTS snapshots (
+    sha256 TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    url TEXT,
+    fetched_at TEXT NOT NULL,
+    content_type TEXT,
+    path TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    status_code INTEGER,
+    error TEXT
+);
+CREATE INDEX IF NOT EXISTS snapshots_source ON snapshots(source, fetched_at DESC);
+
+CREATE TABLE IF NOT EXISTS assets (
+    source TEXT PRIMARY KEY,
+    url TEXT NOT NULL,
+    fetched_at TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    path TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    status_code INTEGER,
+    error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS source_state (
+    source_id TEXT PRIMARY KEY,
+    last_attempt TEXT,
+    last_success TEXT,
+    last_error TEXT,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    next_due TEXT,
+    records_ingested INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+    id TEXT PRIMARY KEY,
+    event_id TEXT,
+    category TEXT NOT NULL,
+    title TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    fired_at TEXT NOT NULL,
+    dismissed_at TEXT,
+    delivered_desktop INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS notifications_fired ON notifications(fired_at DESC);
+"""
+
+INSERT_OR_REPLACE_EVENT = """
+INSERT INTO events (
+    id, source, upstream_id, category, title, description, occurred_at, updated_at,
+    latitude, longitude, depth_km, magnitude, magnitude_unit, url, raw_ref, extra_json, ingested_at
+) VALUES (
+    :id, :source, :upstream_id, :category, :title, :description, :occurred_at, :updated_at,
+    :latitude, :longitude, :depth_km, :magnitude, :magnitude_unit, :url, :raw_ref, :extra_json, :ingested_at
+)
+ON CONFLICT(id) DO UPDATE SET
+    source=excluded.source,
+    upstream_id=excluded.upstream_id,
+    category=excluded.category,
+    title=excluded.title,
+    description=excluded.description,
+    occurred_at=excluded.occurred_at,
+    updated_at=excluded.updated_at,
+    latitude=excluded.latitude,
+    longitude=excluded.longitude,
+    depth_km=excluded.depth_km,
+    magnitude=excluded.magnitude,
+    magnitude_unit=excluded.magnitude_unit,
+    url=excluded.url,
+    raw_ref=excluded.raw_ref,
+    extra_json=excluded.extra_json,
+    ingested_at=excluded.ingested_at
+"""
+
+
+def _dt_to_iso(value: datetime | str | None) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return value.astimezone(timezone.utc).isoformat()
+
+
+def _dt_from_iso(value: Any) -> datetime | None:
+    if value is None or value == "":
+        return None
+    text = str(value)
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+class Store:
+    def __init__(self, db_path: Path | None = None, snapshots_dir: Path | None = None, assets_dir: Path | None = None) -> None:
+        if db_path is None:
+            db_path = default_db_path()
+        if snapshots_dir is None:
+            snapshots_dir = default_snapshot_dir()
+        if assets_dir is None:
+            assets_dir = default_asset_dir()
+
+        self.db_path = Path(db_path)
+        self.snapshots_dir = Path(snapshots_dir)
+        self.assets_dir = Path(assets_dir)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.snapshots_dir.mkdir(parents=True, exist_ok=True)
+        self.assets_dir.mkdir(parents=True, exist_ok=True)
+
+        self._lock = threading.RLock()
+        self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self.initialize()
+
+    def close(self) -> None:
+        with self._lock:
+            self._conn.close()
+
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Cursor]:
+        with self._lock:
+            cursor = self._conn.cursor()
+            try:
+                yield cursor
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+
+    def initialize(self) -> None:
+        for statement in PRAGMA_STATEMENTS:
+            self._conn.execute(statement)
+        self._conn.executescript(SCHEMA_SQL)
+        row = self._conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+        if row is None:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
+                (str(SCHEMA_VERSION),),
+            )
+            self._conn.commit()
+        else:
+            current = int(row[0])
+            if current < SCHEMA_VERSION:
+                self.migrate(current)
+        self._conn.commit()
+
+    def migrate(self, current_version: int) -> None:
+        """Apply versioned schema migrations in order."""
+        _MIGRATIONS: dict[int, str] = {
+            # Future migrations go here, e.g.:
+            # 2: "ALTER TABLE events ADD COLUMN extra2_json TEXT;",
+        }
+        for version in sorted(k for k in _MIGRATIONS if k > current_version):
+            self._conn.executescript(_MIGRATIONS[version])
+            self._conn.execute(
+                "UPDATE meta SET value = ? WHERE key = 'schema_version'", (str(version),)
+            )
+            self._conn.commit()
+
+    # ---- settings -----------------------------------------------------
+
+    def get_setting(self, key: str, default: Any = None) -> Any:
+        row = self._conn.execute(
+            "SELECT value_json FROM settings WHERE key = ?", (key,)
+        ).fetchone()
+        if row is None:
+            return default
+        try:
+            return json.loads(row[0])
+        except json.JSONDecodeError:
+            return default
+
+    def set_setting(self, key: str, value: Any) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO settings(key, value_json) VALUES (?, ?)",
+            (key, json.dumps(value)),
+        )
+        self._conn.commit()
+
+    # ---- events -------------------------------------------------------
+
+    def upsert_events(self, events: list[Event]) -> int:
+        count = 0
+        with self.transaction() as cursor:
+            for event in events:
+                payload = event.model_dump(mode="json")
+                payload["occurred_at"] = _dt_to_iso(payload.get("occurred_at"))
+                payload["updated_at"] = _dt_to_iso(payload.get("updated_at"))
+                payload["ingested_at"] = _dt_to_iso(payload.get("ingested_at"))
+                payload["extra_json"] = json.dumps(payload.get("extra_json") or {})
+                cursor.execute(INSERT_OR_REPLACE_EVENT, payload)
+                count += 1
+
+                # Populate R-Tree for spatial queries
+                if event.latitude is not None and event.longitude is not None:
+                    row = cursor.execute("SELECT rowid FROM events WHERE id = ?", (event.id,)).fetchone()
+                    if row:
+                        cursor.execute(
+                            "INSERT OR REPLACE INTO events_rtree VALUES (?, ?, ?, ?, ?)",
+                            (row[0], event.latitude, event.latitude, event.longitude, event.longitude),
+                        )
+        return count
+
+    def get_event_by_id(self, event_id: str) -> Event | None:
+        """O(1) primary-key lookup for a single event."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM events WHERE id = ? LIMIT 1", (event_id,)
+            ).fetchone()
+        return self._row_to_event(row) if row else None
+
+    def query_events(
+        self,
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        categories: list[str] | None = None,
+        min_magnitude: float | None = None,
+        limit: int = EVENT_LIMIT,
+        bbox: tuple[float, float, float, float] | None = None,
+    ) -> list[Event]:
+        conditions = ["1=1"]
+        params: list[Any] = []
+        if start is not None:
+            conditions.append("occurred_at >= ?")
+            params.append(_dt_to_iso(start))
+        if end is not None:
+            conditions.append("occurred_at <= ?")
+            params.append(_dt_to_iso(end))
+        if categories:
+            placeholders = ",".join("?" for _ in categories)
+            conditions.append(f"category IN ({placeholders})")
+            params.extend(categories)
+        if min_magnitude is not None:
+            conditions.append("magnitude IS NOT NULL AND magnitude >= ?")
+            params.append(min_magnitude)
+        if bbox:
+            min_lat, min_lon, max_lat, max_lon = bbox
+            conditions.append(
+                "latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ?"
+            )
+            params.extend([min_lat, max_lat, min_lon, max_lon])
+
+        sql = f"SELECT * FROM events WHERE {' AND '.join(conditions)} ORDER BY occurred_at DESC LIMIT ?"
+        params.append(limit)
+        rows = self._conn.execute(sql, params).fetchall()
+        return [self._row_to_event(row) for row in rows]
+
+    def find_nearby_event(
+        self,
+        source: str,
+        occurred_at: datetime,
+        latitude: float,
+        longitude: float,
+        max_degrees: float = 1.5,
+        max_hours: int = 2,
+    ) -> Event | None:
+        start = occurred_at - timedelta(hours=max_hours)
+        end = occurred_at + timedelta(hours=max_hours)
+        rows = self._conn.execute(
+            """
+            SELECT * FROM events
+            WHERE source = ?
+              AND occurred_at >= ? AND occurred_at <= ?
+              AND latitude BETWEEN ? AND ?
+              AND longitude BETWEEN ? AND ?
+            ORDER BY ABS(occurred_at - ?) ASC
+            LIMIT 1
+            """,
+            (
+                source,
+                _dt_to_iso(start),
+                _dt_to_iso(end),
+                latitude - max_degrees,
+                latitude + max_degrees,
+                longitude - max_degrees,
+                longitude + max_degrees,
+                _dt_to_iso(occurred_at),
+            ),
+        ).fetchall()
+        if not rows:
+            return None
+        return self._row_to_event(rows[0])
+
+    def event_count(self) -> int:
+        return int(self._conn.execute("SELECT COUNT(*) FROM events").fetchone()[0])
+
+    def _row_to_event(self, row: sqlite3.Row) -> Event:
+        return Event(
+            id=row["id"],
+            source=row["source"],
+            upstream_id=row["upstream_id"],
+            category=row["category"],
+            title=row["title"],
+            description=row["description"],
+            occurred_at=_dt_from_iso(row["occurred_at"]),
+            updated_at=_dt_from_iso(row["updated_at"]),
+            latitude=row["latitude"],
+            longitude=row["longitude"],
+            depth_km=row["depth_km"],
+            magnitude=row["magnitude"],
+            magnitude_unit=row["magnitude_unit"],
+            url=row["url"],
+            raw_ref=row["raw_ref"],
+            ingested_at=_dt_from_iso(row["ingested_at"]),
+            extra_json=json.loads(row["extra_json"] or "{}"),
+        )
+
+    # ---- observations -------------------------------------------------
+
+    def upsert_observations(self, observations: list[Observation]) -> int:
+        count = 0
+        with self.transaction() as cursor:
+            for obs in observations:
+                cursor.execute(
+                    """
+                    INSERT INTO observations (source, series, ts, value, unit, extra_json)
+                    VALUES (:source, :series, :ts, :value, :unit, :extra_json)
+                    ON CONFLICT(source, series, ts) DO UPDATE SET
+                        value=excluded.value, unit=excluded.unit, extra_json=excluded.extra_json
+                    """,
+                    {
+                        "source": obs.source,
+                        "series": obs.series,
+                        "ts": _dt_to_iso(obs.ts),
+                        "value": obs.value,
+                        "unit": obs.unit,
+                        "extra_json": json.dumps(obs.extra_json),
+                    },
+                )
+                count += 1
+        return count
+
+    def latest_observations(self, source: str, prefix: str, since: datetime | None = None) -> list[Observation]:
+        conditions = ["source = ?", "series LIKE ?"]
+        params: list[Any] = [source, f"{prefix}%"]
+        if since is not None:
+            conditions.append("ts >= ?")
+            params.append(_dt_to_iso(since))
+        sql = (
+            f"SELECT * FROM observations WHERE {' AND '.join(conditions)} "
+            "ORDER BY series ASC, ts DESC"
+        )
+        rows = self._conn.execute(sql, params).fetchall()
+        grouped: dict[str, list[Observation]] = {}
+        for row in rows:
+            obs = Observation(
+                source=row["source"],
+                series=row["series"],
+                ts=_dt_from_iso(row["ts"]),
+                value=row["value"],
+                unit=row["unit"],
+                extra_json=json.loads(row["extra_json"] or "{}"),
+            )
+            grouped.setdefault(obs.series, []).append(obs)
+        return [obs_list[0] for obs_list in grouped.values()]
+
+    def get_series(self, source: str, series: str, start: datetime | None = None, end: datetime | None = None, limit: int = 10000) -> list[Observation]:
+        conditions = ["source = ?", "series = ?"]
+        params: list[Any] = [source, series]
+        if start is not None:
+            conditions.append("ts >= ?")
+            params.append(_dt_to_iso(start))
+        if end is not None:
+            conditions.append("ts <= ?")
+            params.append(_dt_to_iso(end))
+        sql = f"SELECT * FROM observations WHERE {' AND '.join(conditions)} ORDER BY ts ASC LIMIT ?"
+        params.append(limit)
+        rows = self._conn.execute(sql, params).fetchall()
+        return [
+            Observation(
+                source=row["source"],
+                series=row["series"],
+                ts=_dt_from_iso(row["ts"]),
+                value=row["value"],
+                unit=row["unit"],
+                extra_json=json.loads(row["extra_json"] or "{}"),
+            )
+            for row in rows
+        ]
+
+    # ---- snapshots ----------------------------------------------------
+
+    def _snapshot_path(self, sha256: str) -> Path:
+        return self.snapshots_dir / sha256[:2] / sha256[2:4] / f"{sha256}.json.gz"
+
+    def save_snapshot(
+        self,
+        source: str,
+        url: str,
+        payload: bytes,
+        content_type: str,
+        status_code: int | None = None,
+        error: str | None = None,
+        fetched_at: datetime | None = None,
+        compress: bool = True,
+    ) -> SnapshotRecord:
+        import hashlib
+
+        sha256 = hashlib.sha256(payload).hexdigest()
+        path = self._snapshot_path(sha256)
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if compress:
+                with gzip.open(path, "wb") as handle:
+                    handle.write(payload)
+            else:
+                path.write_bytes(payload)
+        fetched_at = fetched_at or datetime.now(timezone.utc)
+        record = SnapshotRecord(
+            source=source,
+            url=url,
+            fetched_at=fetched_at,
+            content_type=content_type,
+            path=str(path),
+            size_bytes=len(payload),
+            status_code=status_code,
+            error=error,
+        )
+        with self.transaction() as cursor:
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO snapshots (sha256, source, url, fetched_at, content_type, path, size_bytes, status_code, error)
+                VALUES (:sha256, :source, :url, :fetched_at, :content_type, :path, :size_bytes, :status_code, :error)
+                """,
+                {
+                    "sha256": sha256,
+                    "source": source,
+                    "url": url,
+                    "fetched_at": _dt_to_iso(record.fetched_at),
+                    "content_type": record.content_type,
+                    "path": record.path,
+                    "size_bytes": record.size_bytes,
+                    "status_code": record.status_code,
+                    "error": record.error,
+                },
+            )
+        return record
+
+    def save_asset(
+        self,
+        source: str,
+        url: str,
+        payload: bytes,
+        content_type: str,
+        status_code: int | None = None,
+        error: str | None = None,
+        fetched_at: datetime | None = None,
+    ) -> None:
+        fetched_at = fetched_at or datetime.now(timezone.utc)
+        suffix = os.path.splitext(url.split("?")[0])[-1] or ".bin"
+        name = f"{source}-{int(fetched_at.timestamp())}{suffix}"
+        path = self.assets_dir / name
+        path.write_bytes(payload)
+        with self.transaction() as cursor:
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO assets (source, url, fetched_at, content_type, path, size_bytes, status_code, error)
+                VALUES (:source, :url, :fetched_at, :content_type, :path, :size_bytes, :status_code, :error)
+                """,
+                {
+                    "source": source,
+                    "url": url,
+                    "fetched_at": _dt_to_iso(fetched_at),
+                    "content_type": content_type,
+                    "path": str(path),
+                    "size_bytes": len(payload),
+                    "status_code": status_code,
+                    "error": error,
+                },
+            )
+
+    def latest_asset(self, source: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT path FROM assets WHERE source = ? ORDER BY fetched_at DESC LIMIT 1",
+            (source,),
+        ).fetchone()
+        return row[0] if row is not None else None
+
+    def prune_observations_before(self, source: str, series_like: str, cutoff: datetime) -> int:
+        cursor = self._conn.execute(
+            "DELETE FROM observations WHERE source = ? AND series LIKE ? AND ts < ?",
+            (source, series_like, _dt_to_iso(cutoff)),
+        )
+        self._conn.commit()
+        return cursor.rowcount if cursor.rowcount is not None else 0
+
+    def prune_snapshots_for_source(self, source: str, retention_days: int) -> int:
+        from pathlib import Path as _Path
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+        rows = self._conn.execute(
+            "SELECT sha256, path FROM snapshots WHERE source = ? AND fetched_at < ?",
+            (source, _dt_to_iso(cutoff)),
+        ).fetchall()
+        for row in rows:
+            try:
+                _Path(row["path"]).unlink(missing_ok=True)
+            except OSError:
+                pass
+        self._conn.execute(
+            "DELETE FROM snapshots WHERE source = ? AND fetched_at < ?",
+            (source, _dt_to_iso(cutoff)),
+        )
+        self._conn.commit()
+        return len(rows)
+
+    def prune_snapshots(self, retention_days: int) -> int:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+        rows = self._conn.execute(
+            "SELECT sha256, path FROM snapshots WHERE fetched_at < ?",
+            (_dt_to_iso(cutoff),),
+        ).fetchall()
+        for row in rows:
+            try:
+                Path(row["path"]).unlink(missing_ok=True)
+            except OSError:
+                pass
+        self._conn.execute(
+            "DELETE FROM snapshots WHERE fetched_at < ?",
+            (_dt_to_iso(cutoff),),
+        )
+        self._conn.commit()
+        return len(rows)
+
+    def prune_assets_for_source(self, source: str, keep_latest: int = 7) -> int:
+        """Keep only the N most recent assets for a source, delete older files."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT path FROM assets WHERE source LIKE ? ORDER BY fetched_at DESC",
+                (f"{source}%",),
+            ).fetchall()
+        paths_to_delete = [r[0] for r in rows[keep_latest:]]
+        deleted = 0
+        for path in paths_to_delete:
+            try:
+                Path(path).unlink(missing_ok=True)
+                deleted += 1
+            except Exception:
+                pass
+        if paths_to_delete:
+            with self._lock:
+                placeholders = ",".join("?" * len(paths_to_delete))
+                self._conn.execute(
+                    f"DELETE FROM assets WHERE source LIKE ? AND path IN ({placeholders})",
+                    [f"{source}%"] + paths_to_delete,
+                )
+                self._conn.commit()
+        return deleted
+
+    def _maybe_auto_prune(self) -> None:
+        """Run retention pruning at most once per 24 hours."""
+        last_raw = self.get_setting("last_prune_at")
+        if last_raw:
+            try:
+                last = _dt_from_iso(last_raw)
+                if last and (datetime.now(timezone.utc) - last).total_seconds() < 86400:
+                    return
+            except Exception:
+                pass
+        days = int(self.get_setting("retention_days") or 90)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        try:
+            self.prune_snapshots(days)
+            for src in ["swpc", "openmeteo", "aurora", "solarwind", "moon"]:
+                self.prune_observations_before(src, f"{src}:%", cutoff)
+            self.prune_assets_for_source("sun", keep_latest=14)
+            self.set_setting("last_prune_at", datetime.now(timezone.utc).isoformat())
+        except Exception:
+            pass
+
+    # ---- notifications ------------------------------------------------
+
+    def add_notification(
+        self,
+        notif_id: str,
+        event_id: str | None,
+        category: str,
+        title: str,
+        severity: str,
+        fired_at: datetime,
+    ) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO notifications (id, event_id, category, title, severity, fired_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (notif_id, event_id, category, title, severity, _dt_to_iso(fired_at)),
+            )
+            self._conn.commit()
+
+    def pending_notifications(self, since: datetime | None = None) -> list[dict]:
+        """Return undelivered notifications."""
+        with self._lock:
+            if since:
+                rows = self._conn.execute(
+                    "SELECT id, event_id, category, title, severity, fired_at FROM notifications WHERE delivered_desktop = 0 AND fired_at >= ? ORDER BY fired_at DESC",
+                    (_dt_to_iso(since),),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT id, event_id, category, title, severity, fired_at FROM notifications WHERE delivered_desktop = 0 ORDER BY fired_at DESC"
+                ).fetchall()
+        return [
+            {"id": r[0], "event_id": r[1], "category": r[2], "title": r[3], "severity": r[4], "fired_at": r[5]}
+            for r in rows
+        ]
+
+    def mark_notification_delivered(self, notif_id: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE notifications SET delivered_desktop = 1 WHERE id = ?", (notif_id,)
+            )
+            self._conn.commit()
+
+    def dismiss_notification(self, notif_id: str) -> None:
+        now = datetime.now(timezone.utc)
+        with self._lock:
+            self._conn.execute(
+                "UPDATE notifications SET dismissed_at = ? WHERE id = ?", (_dt_to_iso(now), notif_id)
+            )
+            self._conn.commit()
+
+    # ---- source state -------------------------------------------------
+
+    def upsert_source_state(self, state: SourceState) -> None:
+        with self.transaction() as cursor:
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO source_state (
+                    source_id, last_attempt, last_success, last_error,
+                    consecutive_failures, next_due, records_ingested
+                ) VALUES (
+                    :source_id, :last_attempt, :last_success, :last_error,
+                    :consecutive_failures, :next_due, :records_ingested
+                )
+                """,
+                {
+                    "source_id": state.source_id,
+                    "last_attempt": _dt_to_iso(state.last_attempt),
+                    "last_success": _dt_to_iso(state.last_success),
+                    "last_error": state.last_error,
+                    "consecutive_failures": state.consecutive_failures,
+                    "next_due": _dt_to_iso(state.next_due),
+                    "records_ingested": state.records_ingested,
+                },
+            )
+
+    def all_source_states(self) -> list[SourceState]:
+        rows = self._conn.execute(
+            "SELECT * FROM source_state ORDER BY source_id"
+        ).fetchall()
+        return [
+            SourceState(
+                source_id=row["source_id"],
+                last_attempt=_dt_from_iso(row["last_attempt"]),
+                last_success=_dt_from_iso(row["last_success"]),
+                last_error=row["last_error"],
+                consecutive_failures=row["consecutive_failures"],
+                next_due=_dt_from_iso(row["next_due"]),
+                records_ingested=row["records_ingested"],
+            )
+            for row in rows
+        ]
+
+    def begin_attempt(self, source_id: str, now: datetime) -> None:
+        row = self._conn.execute(
+            "SELECT * FROM source_state WHERE source_id = ?", (source_id,)
+        ).fetchone()
+        if row is None:
+            self._conn.execute(
+                "INSERT INTO source_state (source_id, last_attempt, next_due, consecutive_failures) VALUES (?, ?, ?, 0)",
+                (source_id, _dt_to_iso(now), _dt_to_iso(now)),
+            )
+        else:
+            self._conn.execute(
+                "UPDATE source_state SET last_attempt = ? WHERE source_id = ?",
+                (_dt_to_iso(now), source_id),
+            )
+        self._conn.commit()
+
+    def record_success(self, source_id: str, now: datetime, records: int = 0, cadence_seconds: int = 3600) -> None:
+        row = self._conn.execute(
+            "SELECT records_ingested FROM source_state WHERE source_id = ?",
+            (source_id,),
+        ).fetchone()
+        existing = row[0] if row is not None else 0
+        state = SourceState(
+            source_id=source_id,
+            last_attempt=now,
+            last_success=now,
+            last_error=None,
+            consecutive_failures=0,
+            next_due=now + timedelta(seconds=cadence_seconds),
+            records_ingested=existing + records,
+        )
+        self.upsert_source_state(state)
+        self._maybe_auto_prune()
+
+    def record_failure(self, source_id: str, now: datetime, error: str, cadence_seconds: int = 3600) -> None:
+        row = self._conn.execute(
+            "SELECT consecutive_failures, records_ingested, last_success FROM source_state WHERE source_id = ?",
+            (source_id,),
+        ).fetchone()
+        if row is None:
+            failures = 1
+            records = 0
+            last_success = None
+        else:
+            failures = row[0] + 1
+            records = row[1]
+            last_success = _dt_from_iso(row[2])
+        state = SourceState(
+            source_id=source_id,
+            last_attempt=now,
+            last_success=last_success,
+            last_error=error,
+            consecutive_failures=failures,
+            next_due=now + timedelta(seconds=min(cadence_seconds * (2 ** min(failures, 8)), 21600)),
+            records_ingested=records,
+        )
+        self.upsert_source_state(state)
+
+    def due_sources(self, now: datetime) -> list[str]:
+        tracked = {
+            row[0]
+            for row in self._conn.execute(
+                "SELECT source_id FROM source_state WHERE next_due IS NOT NULL AND next_due > ?",
+                (_dt_to_iso(now),),
+            ).fetchall()
+        }
+        # All known specs minus already-tracked sources that are not yet due.
+        return [sid for sid in self._known_sources() if sid not in tracked]
+
+    def _known_sources(self) -> list[str]:
+        from .sources.registry import SPECS
+
+        return sorted(SPECS.keys())
+
+
+    # ---- stats / backup ----------------------------------------------
+
+    def stats(self) -> dict[str, Any]:
+        event_count = int(self._conn.execute("SELECT COUNT(*) FROM events").fetchone()[0])
+        obs_count = int(self._conn.execute("SELECT COUNT(*) FROM observations").fetchone()[0])
+        snap_count = self._conn.execute("SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM snapshots").fetchone()
+        asset_count = int(self._conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0])
+        db_size = self.db_path.stat().st_size if self.db_path.exists() else 0
+        snap_total = sum(f.stat().st_size for f in self.snapshots_dir.rglob("*") if f.is_file())
+        asset_total = sum(f.stat().st_size for f in self.assets_dir.rglob("*") if f.is_file())
+        return {
+            "events": event_count,
+            "observations": obs_count,
+            "snapshots": snap_count[0],
+            "snapshot_bytes": snap_count[1] or 0,
+            "assets": asset_count,
+            "asset_bytes": asset_total,
+            "db_bytes": db_size,
+            "snapshots_dir": str(self.snapshots_dir),
+            "assets_dir": str(self.assets_dir),
+            "db_path": str(self.db_path),
+        }
+
+    def export_backup(self, dest: Path) -> Path:
+        import tarfile
+
+        dest = Path(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp_db = dest.parent / f"{dest.name}.tmpdb"
+        if tmp_db.exists():
+            tmp_db.unlink()
+        backup_conn = sqlite3.connect(str(tmp_db))
+        with self._lock:
+            self._conn.backup(backup_conn)
+        backup_conn.close()
+        dest.unlink(missing_ok=True)
+        with tarfile.open(dest, "w:gz") as tar:
+            tar.add(tmp_db, arcname="ssnow.sqlite")
+            for f in sorted(self.snapshots_dir.rglob("*")):
+                if f.is_file():
+                    tar.add(f, arcname=str(f.relative_to(self.snapshots_dir.parent)))
+            for f in sorted(self.assets_dir.rglob("*")):
+                if f.is_file():
+                    tar.add(f, arcname=str(f.relative_to(self.assets_dir.parent)))
+        tmp_db.unlink(missing_ok=True)
+        return dest
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass

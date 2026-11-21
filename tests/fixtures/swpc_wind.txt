@@ -1,0 +1,18 @@
+:Data_list: ace_swepam_1m.txt
+:Created: 2026 Nov 20 2228 UT
+# Prepared by the U.S. Dept. of Commerce, NOAA, Space Weather Prediction Center
+#
+# Units: Proton density p/cc
+# Units: Bulk speed km/s
+# Units: Ion tempeture degrees K
+# Status(S): 0 = nominal data, 1 to 8 = bad data record, 9 = no data
+# Missing data values: Density and Speed = -9999.9, Temp. = -1.00e+05
+#
+2026 11 20  2028   61364   73680    0        5.0      376.0     6.46e+04
+2026 11 20  2029   61364   73740    0        6.0      379.7     6.29e+04
+2026 11 20  2032   61364   73920    0        6.4      381.1     4.51e+04
+2026 11 20  2052   61364   75120    9    -9999.9    -9999.9    -1.00e+05
+2026 11 20  2056   61364   75360    1        4.2      371.7     5.23e+04
+2026 11 20  2100   61364   75600    0        4.5      372.3     5.67e+04
+2026 11 20  2101   61364   75660    0        4.7      371.3     5.45e+04
+2026 11 20  2106   61364   75960    0        4.0      372.9     5.71e+04

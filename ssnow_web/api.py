@@ -253,9 +253,13 @@ def observations(
     source: str = Query(),
     series: str = Query(),
     limit: int = Query(default=120, le=10000),
+    order: str = Query(default="asc", pattern="^(asc|desc)$"),
 ) -> dict[str, Any]:
     store = get_store()
-    rows = store.get_series(source, series, limit=limit)
+    rows = store.get_series(source, series, limit=10000)
+    if order == "desc":
+        rows = rows[::-1]
+    rows = rows[:limit]
     return {
         "source": source,
         "series": series,

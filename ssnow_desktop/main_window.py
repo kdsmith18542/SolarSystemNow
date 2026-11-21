@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -41,27 +42,70 @@ class IngestWorker(QObject):
     finished = Signal(object)
     error = Signal(str)
 
-    def __init__(self, store: Store) -> None:
+    def __init__(self, store) -> None:
         super().__init__()
         self.store = store
+        self.remote_base: str | None = getattr(store, "base_url", None) if getattr(store, "is_remote", False) else None
 
     def run(self) -> None:
         import httpx
 
+        if self.remote_base:
+            # Remote mode: the server ingests; the desktop just refreshes.
+            try:
+                resp = httpx.post(f"{self.remote_base}/api/ingest", timeout=120.0)
+                resp.raise_for_status()
+                summary = resp.json().get("summary", {})
+                self.finished.emit([_RemoteReport(summary)])
+            except Exception as exc:  # noqa: BLE001
+                self.error.emit(str(exc))
+            return
         with httpx.Client() as client:
             reports = run_due(self.store, client)
         self.finished.emit(reports)
+
+
+class _RemoteReport:
+    """Pseudo-report wrapping the server's ingest summary for _on_finished."""
+
+    ok = True
+    events: list = []
+    observations: list = []
+
+    def __init__(self, summary: dict) -> None:
+        self.summary = summary
 
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         ensure_dirs()
-        self.store = Store()
-        from ssnow_core.seed import seed_if_empty
+        settings = QSettings("ssnow", "ssnow")
+        self.remote_mode = bool(settings.value("remote_mode", False, type=bool))
+        self.remote_base = str(settings.value("remote_base_url", "http://localhost:8123") or "http://localhost:8123")
+        if self.remote_mode:
+            from ssnow_core.remote import RemoteStore
 
-        seed_if_empty(self.store)
-        self.setWindowTitle("Solar System Now — Real Data Dashboard")
+            try:
+                import httpx
+
+                probe = httpx.get(f"{self.remote_base.rstrip('/')}/api/health", timeout=10.0)
+                probe.raise_for_status()
+                self.store = RemoteStore(self.remote_base)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Remote server %s unreachable (%s); falling back to standalone", self.remote_base, exc)
+                self.remote_mode = False
+                self.store = Store()
+                from ssnow_core.seed import seed_if_empty
+
+                seed_if_empty(self.store)
+        else:
+            self.store = Store()
+            from ssnow_core.seed import seed_if_empty
+
+            seed_if_empty(self.store)
+        title = "Solar System Now — Real Data Dashboard" + (" (remote server)" if self.remote_mode else "")
+        self.setWindowTitle(title)
         self.resize(1280, 800)
 
         central = QWidget()
@@ -205,13 +249,25 @@ class MainWindow(QMainWindow):
 
     def _on_finished(self, reports) -> None:
         self.refresh_btn.setEnabled(True)
-        ok = sum(1 for r in reports if r.ok)
-        fail = len(reports) - ok
-        events = sum(len(r.events) for r in reports)
-        obs = sum(len(r.observations) for r in reports)
-        self.status_label.setText(
-            f"Ingested {ok} sources ok, {fail} failed — {events} events, {obs} observations"
-        )
+        remote_summary = None
+        for r in reports:
+            if isinstance(r, _RemoteReport):
+                remote_summary = r.summary
+                break
+        if remote_summary is not None:
+            ok, fail = remote_summary.get("ok", 0), remote_summary.get("failed", 0)
+            events, obs = remote_summary.get("events", 0), remote_summary.get("observations", 0)
+            self.status_label.setText(
+                f"Server ingested {ok} sources ok, {fail} failed — {events} events, {obs} observations"
+            )
+        else:
+            ok = sum(1 for r in reports if r.ok)
+            fail = len(reports) - ok
+            events = sum(len(r.events) for r in reports)
+            obs = sum(len(r.observations) for r in reports)
+            self.status_label.setText(
+                f"Ingested {ok} sources ok, {fail} failed — {events} events, {obs} observations"
+            )
         # Refresh all views so background and foreground views are up to date
         for i, view in enumerate(self.views):
             try:

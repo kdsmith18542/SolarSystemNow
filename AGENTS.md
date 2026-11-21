@@ -77,6 +77,7 @@ The project is structured into three distinct layers with strict boundaries:
   - `vite.config.ts`: Builds into `/media/keith/Data2/ss-now/static/`.
 - `tests/`:
   - `test_adapters.py`, `test_new_sources.py`: Fixture-based tests for all 32 enabled ingestion adapters.
+  - `test_remote.py`: `RemoteStore` HTTP client (MockTransport), read-only guarantees, imagery cache, secret handling.
   - `test_store.py`: Database operations, R-tree index, notifications, asset pruning, backoff.
   - `test_core_no_qt.py`: Enforces zero Qt imports in core.
   - `test_smoke_gui.py`: Offscreen GUI construction test.
@@ -135,6 +136,12 @@ Locations are stored as a JSON list under the `"locations"` setting key:
 ]
 ```
 When querying location, always check `locations = store.get_setting("locations") or []` and take `locations[0]` if available, falling back to `store.get_setting("location")` or the default (London).
+
+### Remote server mode (desktop)
+- `ssnow_desktop` views receive either a local `Store` or a `RemoteStore` (`ssnow_core/remote.py`); both duck-type the same read API. Views must use only the portable subset: `query_events`, `get_event_by_id`, `get_series`, `latest_observations`, `get_setting`/`set_setting` (only `locations`, `tide_stations`, `nasa_api_key`, `retention_days`), `all_source_states`, `stats`, `latest_asset`, notification methods.
+- `RemoteStore` never exposes local-only methods (`upsert_events`, `export_backup`, …) — they raise. Ingest in remote mode is a server-side `POST /api/ingest`; the desktop only refreshes.
+- The NASA key is write-only over HTTP: `get_setting("nasa_api_key")` returns `""` even when one is stored, so a blank field means "keep" (SettingsView skips the POST when blank in remote mode).
+- Toggle lives in QSettings (`ssnow`/`ssnow`: `remote_mode`, `remote_base_url`) and applies on restart. Unreachable server → standalone fallback with a logged warning. Defaults: `http://localhost:8123`.
 
 ### Notification System
 Use the `notifications` table to record alerts:

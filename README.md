@@ -43,6 +43,24 @@ ssnow-web --port 8123
 
 Environment overrides: `SSNOW_DATA_DIR`, `SSNOW_CONFIG_DIR`, `SSNOW_CACHE_DIR`. Extra flags: `--log-level`.
 
+## Remote server mode (desktop ↔ ssnow-web)
+
+Run `ssnow-web` on a home server/NAS and point the desktop at it:
+
+1. Start the server: `ssnow-web --port 8123` (or `docker compose`, below).
+2. Desktop → **Settings → Server connection** → tick the box, enter `http://host:8123`, Save, restart.
+3. Ingest now happens server-side (`POST /api/ingest`); the desktop reads over HTTP and shows `(remote server)` in the title.
+
+If the server is unreachable at startup the desktop falls back to standalone with a logged warning. The NASA key never leaves the server; leaving the key field blank keeps the stored one. Backup export is standalone-only.
+
+## Self-hosting (Docker)
+
+```bash
+(cd ssnow_web && npm run build)          # bundle into ../static/
+docker compose -f packaging/docker-compose.yml up -d --build
+# http://<host>:8123 — data persists in the ssnow-data volume
+```
+
 
 ## Packaging (Linux)
 

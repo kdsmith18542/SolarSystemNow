@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import (
+    QCheckBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
@@ -28,6 +30,22 @@ class SettingsView(BaseView):
         layout = QVBoxLayout(self)
         layout.setSpacing(16)
         form = QFormLayout()
+
+        # Remote server connection (applies on restart)
+        self._qsettings = QSettings("ssnow", "ssnow")
+        self.remote_check = QCheckBox("Use remote server instead of local SQLite")
+        self.remote_check.setChecked(bool(self._qsettings.value("remote_mode", False, type=bool)))
+        self.remote_check.setToolTip("Fetch all data from a running ssnow-web instance. Applies on restart.")
+        self.remote_url = QLineEdit()
+        self.remote_url.setPlaceholderText("http://localhost:8123")
+        self.remote_url.setText(str(self._qsettings.value("remote_base_url", "http://localhost:8123")))
+        remote_row = QHBoxLayout()
+        remote_row.addWidget(self.remote_check)
+        remote_row.addWidget(self.remote_url)
+        remote_note = QLabel("Takes effect after restart. In remote mode, backup export is disabled.")
+        remote_note.setStyleSheet("color: #666; font-size: 11px;")
+        form.addRow("Server connection:", remote_row)
+        form.addRow("", remote_note)
 
         # Location inputs
         self.loc_name = QLineEdit()
@@ -80,6 +98,7 @@ class SettingsView(BaseView):
 
         self.nasa_key = QLineEdit()
         self.nasa_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.nasa_key.setPlaceholderText("Leave blank to keep the stored key")
         form.addRow("NASA API key (optional):", self.nasa_key)
 
         self.retention = QSpinBox()
@@ -125,7 +144,7 @@ class SettingsView(BaseView):
 
         self.nasa_key.setText(self.store.get_setting("nasa_api_key") or "")
         self.retention.setValue(self.store.get_setting("retention_days", 90))
-        self.db_path_lbl.setText(str(self.store.db_path))
+        self.db_path_lbl.setText(str(getattr(self.store, "db_path", "—")))
 
     def _add_location(self) -> None:
         name = self.loc_name.text().strip()
@@ -180,11 +199,23 @@ class SettingsView(BaseView):
         self.refresh()
 
     def _save(self) -> None:
-        self.store.set_setting("nasa_api_key", self.nasa_key.text().strip() or None)
+        self._qsettings.setValue("remote_mode", bool(self.remote_check.isChecked()))
+        self._qsettings.setValue("remote_base_url", self.remote_url.text().strip() or "http://localhost:8123")
+        key_text = self.nasa_key.text().strip()
+        # In remote mode the server never reveals the key: a blank field
+        # means "keep", so only POST when the user typed something.
+        if key_text or not getattr(self.store, "is_remote", False):
+            self.store.set_setting("nasa_api_key", key_text or None)
         self.store.set_setting("retention_days", self.retention.value())
-        QMessageBox.information(self, "Settings", "Settings saved.")
+        QMessageBox.information(self, "Settings", "Settings saved. Restart to apply a server-connection change.")
 
     def _export(self) -> None:
+        if getattr(self.store, "is_remote", False):
+            QMessageBox.information(
+                self, "Backup",
+                "Backup export is only available in standalone mode (the server owns its database).",
+            )
+            return
         dest, _ = QFileDialog.getSaveFileName(self, "Export backup", "ssnow-backup.tar.gz", "*.tar.gz")
         if not dest:
             return

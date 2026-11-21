@@ -34,7 +34,7 @@ The core infrastructure and high-priority reliability fixes have been successful
   - Desktop map color-coded markers and frosted-glass legend.
   - SDO solar imagery served to the web frontend via `/api/sun/image`.
   - Desktop system tray alerts for significant earthquakes ($M \ge 6.0$) and geomagnetic storms ($Kp \ge 5.0$).
-- [x] **Verification**: All 51 unit/adapter/smoke tests pass cleanly (`pytest -v`).
+- [x] **Verification**: All 57 unit/adapter/smoke tests pass cleanly (`pytest -v`).
 
 ---
 
@@ -117,8 +117,8 @@ The core infrastructure and high-priority reliability fixes have been successful
 
 - [x] **Server-Sent Events (SSE) Stream in FastAPI**:
   - Implemented `/api/stream/live` in `ssnow_web/api.py` with subscriber broadcasting on ingest cycles and heartbeat keep-alive. Web header shows ● LIVE / ○ offline and auto-refreshes every view on `ingest_complete`.
-- [ ] **Remote Server Connection Option**:
-  - Allow the PySide6 desktop app to toggle between `[x] Standalone (local SQLite)` and `[ ] Remote Server (http://...)`. Deferred: needs an HTTP-backed Store abstraction (all views currently take a local `Store`).
+- [x] **Remote Server Connection Option**:
+  - `ssnow_core/remote.py` `RemoteStore` duck-types the read subset of `Store` over HTTP (events, series, settings, sources, stats, imagery with an hourly disk cache, in-memory notifications). Desktop Settings has a server-connection section (QSettings `remote_mode` + `remote_base_url`, applies on restart); ingest becomes `POST /api/ingest` on the server. Unreachable server falls back to standalone with a logged warning. Secrets never leave the server (blank NASA key = "keep"). Backup export is disabled in remote mode. `/api/obs` gained an `order=asc|desc` param so latest-value lookups match local `latest_observations`.
 - [x] **Docker Compose for Self-Hosting**:
   - `packaging/Dockerfile.web` + `packaging/docker-compose.yml` (`docker compose ... up -d`, data in `ssnow-data` volume). Compose config validated with `docker compose config`.
 
@@ -155,5 +155,7 @@ The core infrastructure and high-priority reliability fixes have been successful
 | **Settings Location Delete/Reorder** | P2 | Completed | Desktop SettingsView |
 | **SSE Live Stream Endpoint** | P2 | Completed | Web API + Live badge (`/api/stream/live`) |
 | **Full Seed Coverage (33 Sources)** | P2 | Partial (28/33) | Core / Offline Fixtures |
+| **Remote Server Mode (RemoteStore + Settings toggle)** | P2 | Completed | Core + Desktop |
+| **Docker Compose Self-Hosting** | P2 | Completed | Packaging |
 | **Events Table Sorting + Map Cross-Linking** | P2 | Completed | Desktop EventsView + MapView + Web |
 | **AppImage Packaging Test** | P3 | Completed | Portable spec + data bundled, frozen GUI boots |

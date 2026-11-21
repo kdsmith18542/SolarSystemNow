@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import httpx
 
 from ssnow_core.models import Event
-from ssnow_core.sources.donki import CMEAdapter
+from ssnow_core.sources.donki import CMEAdapter, FlareAdapter
 from ssnow_core.sources.eonet import EONETAdapter
 from ssnow_core.sources.openmeteo import OpenMeteoAdapter
 from ssnow_core.sources.registry import SPECS
@@ -90,6 +90,19 @@ def test_donki_cme_ingest(tmp_store):
     assert len(report.events) == 1
     assert report.events[0].category == "cme"
     assert report.events[0].magnitude == 368.0
+
+
+def test_donki_flr_ingest(tmp_store):
+    adapter = FlareAdapter(SPECS["donki_flare"])
+    report = adapter.ingest(tmp_store, _client(load_fixture("donki_flr.json")), _now())
+    assert report.ok
+    assert len(report.events) == 9
+    first = report.events[0]
+    assert first.category == "solar_flare"
+    assert first.id == "donki:flare:2026-11-14T21:16:00-FLR-001"
+    assert first.extra_json["class_type"] == "C2.8"
+    # Solar-flare positions are heliographic source regions, never map pins.
+    assert first.latitude is None and first.longitude is None
 
 
 def test_sun_imagery_asset(tmp_store):

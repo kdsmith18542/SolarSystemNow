@@ -1,6 +1,6 @@
 """Secret redaction for URLs, errors, logs and public API responses.
 
-Upstream APIs (NASA DONKI/NeoWs) put keys in the query string. Those URLs and
+Upstream APIs such as NeoWs put keys in the query string. Those URLs and
 the resulting httpx exception strings must never be persisted, logged or
 served verbatim.
 """

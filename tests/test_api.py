@@ -138,6 +138,7 @@ def test_api_sun_summary_new_fields(client):
     ):
         assert key in data
         assert data[key] is None  # cleared store: no data yet
+    assert data["poles"] == {"north": None, "south": None}
 
     # With real observations the values surface.
     from datetime import datetime, timezone
@@ -169,6 +170,18 @@ def test_api_sun_summary_new_fields(client):
             )
         ]
     )
+    pole_ts = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    prev_ts = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    store.upsert_observations(
+        [
+            Observation(source="geomag_poles", series="geomag_pole:north:lat", ts=prev_ts, value=85.958, unit="deg", extra_json={"year": 2024}),
+            Observation(source="geomag_poles", series="geomag_pole:north:lon", ts=prev_ts, value=139.0, unit="deg", extra_json={"year": 2024}),
+            Observation(source="geomag_poles", series="geomag_pole:north:lat", ts=pole_ts, value=85.958, unit="deg", extra_json={"year": 2025}),
+            Observation(source="geomag_poles", series="geomag_pole:north:lon", ts=pole_ts, value=139.0, unit="deg", extra_json={"year": 2025}),
+            Observation(source="geomag_poles", series="geomag_pole:north:lat_forecast", ts=datetime(2030, 1, 1, tzinfo=timezone.utc), value=84.723, unit="deg", extra_json={"year": 2030}),
+            Observation(source="geomag_poles", series="geomag_pole:north:lon_forecast", ts=datetime(2030, 1, 1, tzinfo=timezone.utc), value=126.092, unit="deg", extra_json={"year": 2030}),
+        ]
+    )
     res2 = client.get("/api/sun/summary")
     data2 = res2.json()
     assert data2["wind_speed"]["value"] == pytest.approx(412.0)
@@ -177,3 +190,4 @@ def test_api_sun_summary_new_fields(client):
     assert data2["aurora_oval"]["value"] == pytest.approx(58.4)
     assert data2["declination"]["value"] == pytest.approx(-13.2)
     assert data2["declination"]["location"] == "Home"
+    assert data2["poles"]["north"]["drift_km"] == pytest.approx(0.0)

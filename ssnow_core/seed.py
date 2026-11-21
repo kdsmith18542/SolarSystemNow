@@ -14,7 +14,7 @@ SEED_SOURCES = (
     "jpl_fireball", "spc_outlook", "swpc_dst", "sentry", "swpc_cycle", "iem_lsr",
     "swpc_kp_forecast", "swpc_alerts", "swpc_xray", "swpc_f107",
     "swpc_wind", "swpc_mag", "swpc_proton", "donki_gst",
-    "nws_alerts", "aurora",
+    "nws_alerts", "aurora", "openmeteo", "moon", "donki_flare", "geomag_poles",
     "sun_imagery", "sun_sdo193", "sun_sdo304", "sun_hmi",
     "sun_lasco_c2", "sun_lasco_c3",
 )
@@ -41,6 +41,9 @@ SEED_FILES = {
     "donki_gst": "donki_gst.json",
     "nws_alerts": "nws_alerts.json",
     "aurora": "aurora.json",
+    "openmeteo": "openmeteo_vortex.json",
+    "donki_flare": "donki_flr.json",
+    "geomag_poles": "geomag_poles.json",
     "sun_imagery": "sun_imagery.jpg",
     "sun_sdo193": "sun_sdo193.jpg",
     "sun_sdo304": "sun_sdo304.jpg",
@@ -74,6 +77,23 @@ def seed_if_empty(store) -> int:
     total = 0
     failures: list[str] = []
     for source_id in SEED_SOURCES:
+        adapter = build_adapter(source_id)
+        spec = SPECS[source_id]
+        if adapter is None:
+            failures.append(f"{source_id}: no adapter")
+            continue
+        if source_id == "moon":
+            # Computed live from the bundled JPL ephemeris (no fixture needed).
+            try:
+                report = adapter.ingest(store, None, now)
+            except Exception as exc:  # noqa: BLE001
+                failures.append(f"moon: {exc}")
+                continue
+            if report.error:
+                failures.append(f"moon: {report.error}")
+                continue
+            total += len(report.observations)
+            continue
         try:
             payload = (
                 resources.files("ssnow_core")
@@ -84,13 +104,39 @@ def seed_if_empty(store) -> int:
         except (FileNotFoundError, ModuleNotFoundError) as exc:
             failures.append(f"{source_id}: {exc}")
             continue
-        adapter = build_adapter(source_id)
-        spec = SPECS[source_id]
         try:
             if source_id in IMAGE_SEEDS:
                 # Genuine captured SDO/LASCO JPEGs straight into the asset store.
                 store.save_asset(source_id, spec.url, payload, "image/jpeg", status_code=200, fetched_at=now)
                 total += 1
+                continue
+            if source_id == "geomag_poles":
+                store.save_snapshot(
+                    source_id,
+                    spec.url,
+                    payload,
+                    "application/json",
+                    status_code=200,
+                    fetched_at=now,
+                )
+                observations = adapter.parse_seed(payload, now)
+                store.upsert_observations(observations)
+                total += len(observations)
+                continue
+            if source_id == "openmeteo":
+                # Location-independent stratospheric-vortex proxy only. Per-location
+                # weather/marine/AQ still need user locations and a live ingest.
+                store.save_snapshot(
+                    "openmeteo:vortex:60N:0E",
+                    spec.url,
+                    payload,
+                    "application/json",
+                    status_code=200,
+                    fetched_at=now,
+                )
+                _, observations = adapter.parse_vortex(payload, "vortex:60N:0E", now)
+                store.upsert_observations(observations)
+                total += len(observations)
                 continue
             store.save_snapshot(source_id, spec.url, payload, "application/json", status_code=200, fetched_at=now)
             # NeoWsAdapter.parse(payload, now) vs HttpAdapter.parse(payload, content_type, now)

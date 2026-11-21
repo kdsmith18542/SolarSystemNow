@@ -45,22 +45,29 @@ def _parse_iso_utc(value: str | None) -> datetime | None:
 
 
 class _DonkiAdapter(HttpAdapter):
+    lookback_days = 7
+
     def __init__(self, spec) -> None:
         super().__init__(spec)
         self.endpoint_path = spec.url.rstrip("/")
         self._key = "DEMO_KEY"
 
     def before_request(self, store) -> None:
-        self._key = store.get_setting("nasa_api_key") or "DEMO_KEY"
+        # CCMC DONKI-API needs no key; keep the NASA key only for keyed specs.
+        if self.spec.requires_key:
+            self._key = store.get_setting("nasa_api_key") or "DEMO_KEY"
+        else:
+            self._key = ""
 
     def build_request(self, now=None):
         end = now or _utcnow()
-        start = end - timedelta(days=7)
+        start = end - timedelta(days=self.lookback_days)
         params = {
             "startDate": start.date().isoformat(),
             "endDate": end.date().isoformat(),
-            "api_key": self._key,
         }
+        if self.spec.requires_key and self._key:
+            params["api_key"] = self._key
         return "GET", self.endpoint_path, params, {}
 
 
@@ -120,6 +127,8 @@ class CMEAdapter(_DonkiAdapter):
 class GSTAdapter(_DonkiAdapter):
     """DONKI geomagnetic-storm feed (defensive parse; endpoint valid)."""
 
+    lookback_days = 60
+
     def parse(self, payload: bytes, content_type: str, now=None):
         import json
 
@@ -166,13 +175,7 @@ class GSTAdapter(_DonkiAdapter):
 
 
 class FlareAdapter(_DonkiAdapter):
-    """DONKI solar-flare feed (currently disabled).
-
-    The api.nasa.gov DONKI gateway has no working FLR route (verified 404,
-    2026-11-20), so this adapter is registered with enabled=False until the
-    upstream route exists. Solar flare activity is covered meanwhile by the
-    SWPC GOES X-ray adapter (`swpc_xray`).
-    """
+    """DONKI solar-flare feed (CCMC DONKI-API; keyless since the Sep-2026 migration)."""
 
     def parse(self, payload: bytes, content_type: str, now=None):
         import json
@@ -194,9 +197,9 @@ class FlareAdapter(_DonkiAdapter):
             }
             events.append(
                 Event(
-                    id=f"donki:flare:{item.get('flareID') or item.get('beginTime')}",
+                    id=f"donki:flare:{item.get('flrID') or item.get('beginTime')}",
                     source="donki",
-                    upstream_id=str(item.get("flareID") or item.get("beginTime")),
+                    upstream_id=str(item.get("flrID") or item.get("beginTime")),
                     category="solar_flare",
                     title=f"Solar flare {item.get('classType', '')}",
                     description=item.get("note") or "",

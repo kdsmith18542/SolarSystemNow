@@ -73,7 +73,7 @@ def test_settings_roundtrip_and_readonly():
             return httpx.Response(200, json={"ok": True}, request=request)
         return httpx.Response(200, json={
             "locations": [{"name": "Home", "lat": 1.0, "lon": 2.0, "key": "1,2"}],
-            "tide_stations": [], "nasa_api_key": True, "retention_days": 90,
+            "nasa_api_key": True, "retention_days": 90,
         }, request=request)
 
     store = RemoteStore("http://srv:8123", client=_client(handler))
@@ -166,7 +166,7 @@ def test_read_through_cache_avoids_repeat_requests():
         calls["n"] += 1
         return httpx.Response(200, json={
             "locations": [{"name": "Home", "lat": 1.0, "lon": 2.0, "key": "1,2"}],
-            "tide_stations": [], "nasa_api_key": False, "retention_days": 90,
+            "nasa_api_key": False, "retention_days": 90,
         }, request=request)
 
     store = RemoteStore("http://srv:8123", client=_client(handler))
@@ -188,7 +188,6 @@ def test_prefetch_warms_cache_for_view_reads():
         if path == "/api/settings":
             body = {
                 "locations": [{"name": "Home", "lat": 1.0, "lon": 2.0, "key": "1,2"}],
-                "tide_stations": [{"id": "8454000", "name": "Port"}],
                 "nasa_api_key": False,
                 "retention_days": 90,
             }

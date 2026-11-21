@@ -7,8 +7,6 @@ export default function Settings() {
   const [locName, setLocName] = useState('');
   const [locLat, setLocLat] = useState('');
   const [locLon, setLocLon] = useState('');
-  const [tideId, setTideId] = useState('');
-  const [tideName, setTideName] = useState('');
   const [nasaKey, setNasaKey] = useState('');
   const [retention, setRetention] = useState('90');
   const [token, setToken] = useState(getWriteToken());
@@ -46,19 +44,6 @@ export default function Settings() {
   const removeLocation = (key: string) => {
     if (!settings) return;
     save({ locations: settings.locations.filter((l) => l.key !== key) }, 'Location removed');
-  };
-
-  const addTideStation = () => {
-    if (!settings || !tideId.trim()) { setMsg('Enter a station ID'); return; }
-    if ((settings.tide_stations || []).some((s) => s.id === tideId.trim())) { setMsg('That station is already configured'); return; }
-    const tide_stations = [...(settings.tide_stations || []), { id: tideId.trim(), name: tideName.trim() || tideId.trim() }];
-    save({ tide_stations }, 'Tide station saved');
-    setTideId(''); setTideName('');
-  };
-
-  const removeTideStation = (id: string) => {
-    if (!settings) return;
-    save({ tide_stations: (settings.tide_stations || []).filter((s) => s.id !== id) }, 'Tide station removed');
   };
 
   const saveToken = () => {
@@ -111,30 +96,7 @@ export default function Settings() {
       </div>
 
       <div className={card}>
-        <h2 className={label}>Tide stations (NOAA CO-OPS IDs)</h2>
-        <div className="flex flex-wrap gap-2">
-          <input value={tideId} onChange={(e) => setTideId(e.target.value)} placeholder="Station ID (e.g. 8454000)" className={input} />
-          <input value={tideName} onChange={(e) => setTideName(e.target.value)} placeholder="Label" className={input} />
-          <button onClick={addTideStation} disabled={busy} className={primary}>Add</button>
-        </div>
-        {settings && (settings.tide_stations || []).length > 0 ? (
-          <ul className="mt-4 space-y-1 text-sm text-slate-300">
-            {settings.tide_stations.map((s) => (
-              <li key={s.id} className="flex items-center gap-3">
-                <span className="flex-1">{s.name} <span className="text-xs text-slate-500">({s.id})</span></span>
-                <button onClick={() => removeTideStation(s.id)} disabled={busy}
-                  className="text-xs text-slate-400 hover:text-red-400 border border-slate-700 rounded px-2 py-0.5">Remove</button>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="mt-4 text-sm text-slate-500">No stations yet.</p>
-        )}
-        <p className="mt-2 text-xs text-slate-500">Find IDs via NOAA Tides &amp; Currents station search.</p>
-      </div>
-
-      <div className={card}>
-        <h2 className={label}>NASA API key (optional, for DONKI)</h2>
+        <h2 className={label}>NASA API key (optional, for NeoWs close approaches)</h2>
         <div className="flex flex-wrap items-center gap-2">
           <input value={nasaKey} onChange={(e) => setNasaKey(e.target.value)} type="password" placeholder="Leave blank to keep the stored key"
             className={`${input} w-full max-w-xs`} />

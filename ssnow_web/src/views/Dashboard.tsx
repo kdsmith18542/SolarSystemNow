@@ -85,7 +85,6 @@ export default function Dashboard() {
   const [summary, setSummary] = useState<SunSummary | null>(null);
   const [kpSeries, setKpSeries] = useState<number[]>([]);
   const [moon, setMoon] = useState<{ phase_name: string | null; illumination: number | null } | null>(null);
-  const [tide, setTide] = useState<{ value: number; ts: string; station: string } | null>(null);
   const [neo, setNeo] = useState<any>(null);
   const [cme, setCme] = useState<any>(null);
   const [wx, setWx] = useState<any[]>([]);
@@ -112,14 +111,6 @@ export default function Dashboard() {
     }).catch(() => null);
     api.cmeWatch().then(setCme).catch(() => null);
     api.weatherNow().then(r => setWx(r.locations)).catch(() => null);
-    api.settings.get().then(s => {
-      const st = (s.tide_stations || [])[0];
-      if (!st) return;
-      api.obs('tides', `tides:${st.id}:height`, 1).then(r => {
-        const p = r.points[0];
-        if (p) setTide({ value: p.value, ts: p.ts, station: st.name });
-      }).catch(() => null);
-    }).catch(() => null);
   }, [tick]);
 
   const quake = events.find(e => e.category === 'earthquake');
@@ -207,7 +198,7 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* Event cards: quake / neo / cme / tide */}
+      {/* Event cards: quake / neo / cme / moon */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
           <div className="text-[10px] uppercase tracking-[0.2em] text-slate-500 mb-1">Latest earthquake</div>
@@ -244,16 +235,6 @@ export default function Dashboard() {
               <div className="text-[10px] text-slate-500">ballistic model · not an observation</div>
             </>
           ) : <div className="text-slate-600 text-sm">no CME in window</div>}
-        </div>
-        <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-          <div className="text-[10px] uppercase tracking-[0.2em] text-slate-500 mb-1">Tide level</div>
-          {tide ? (
-            <>
-              <div className="text-3xl font-extrabold text-teal-400">{tide.value.toFixed(2)} m</div>
-              <div className="text-xs text-slate-400 truncate">{tide.station}</div>
-              <div className="text-[10px] text-slate-500">{fmt(tide.ts)} · NOAA CO-OPS</div>
-            </>
-          ) : <div className="text-slate-600 text-sm">add a station in Settings</div>}
         </div>
       </div>
 

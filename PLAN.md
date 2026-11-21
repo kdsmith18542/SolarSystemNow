@@ -34,7 +34,7 @@ The core infrastructure and high-priority reliability fixes have been successful
   - Desktop map color-coded markers and frosted-glass legend.
   - SDO solar imagery served to the web frontend via `/api/sun/image`.
   - Desktop system tray alerts for significant earthquakes ($M \ge 6.0$) and geomagnetic storms ($Kp \ge 5.0$).
-- [x] **Verification**: All 97 unit/adapter/API/smoke/regression tests pass cleanly (`pytest -v`); Playwright 9/9; Docker image boots with seeded data.
+- [x] **Verification**: All 100 unit/adapter/API/smoke/regression tests pass cleanly (`pytest -v`); Playwright 9/9; Docker image boots with seeded data.
 
 ---
 
@@ -47,7 +47,7 @@ The core infrastructure and high-priority reliability fixes have been successful
 - [x] **Volcanoes**: NASA EONET `volcanoes` category mapped to `volcano` in `ssnow_core/sources/eonet.py:13-25`. Same feed also covers wildfires, storms, floods. Map has dedicated Volcano+Fire layer.
 - [x] **Asteroids**: NeoWs (keyed, 7-day) + JPL SBDB CAD (keyless, 30-day, asteroids AND comets). Stored as `category="neo"` with LD/km/velocity/size/Hazard in `extra_json`.
 - [x] **Comets**: JPL CAD `jpl_cad` adapter (`ssnow_core/sources/cad.py`) — slash-designation detection (`1P/Halley`, `C/...`), kind split, SBDB links. No extra API key required.
-- [x] **Streamer verdict (space + earth + weather for all-in-one tooling)**: CONFIRMED. OBS F11 fullscreen + SSE live stream + composite threat dial (now Bz/proton/Dst-aware) + aurora verdict card + CME watch + multi-location weather/AQ/marine + tide stations + quake/tsunami/volcano layers covers the full loop a broadcaster needs (space weather → aurora call → local weather → hazard map) without leaving the app. Remaining gap is only CME *arrival countdown* (DONKI provides no arrival timestamp — currently shown as latest-CME watch verdict instead of fabricated countdown, per no-fabrication rule).
+- [x] **Streamer verdict (space + earth + weather for all-in-one tooling)**: CONFIRMED. OBS F11 fullscreen + SSE live stream + composite threat dial (now Bz/proton/Dst-aware) + aurora verdict card + CME watch + multi-location weather/AQ/marine + geomagnetic pole drift/anomaly reports + quake/tsunami/volcano layers covers the full loop a broadcaster needs (space weather → aurora call → local weather → hazard map) without leaving the app. Remaining gap is only CME *arrival countdown* (DONKI provides no arrival timestamp — currently shown as latest-CME watch verdict instead of fabricated countdown, per no-fabrication rule).
 
 ## 3. P1 Streamer Gap Ports (2026-11-21 — all free, MIT-keepable, US public domain / NASA)
 
@@ -102,9 +102,9 @@ The core infrastructure and high-priority reliability fixes have been successful
 ### Milestone 2: Data & Offline Enrichment
 
 - [x] **Expand Seed Coverage for Offline Use**:
-  - Now 28 of 33 sources seed offline (adds Kp forecast, SWPC alerts, X-ray, F10.7, RTSW wind/IMF, protons, GST, NWS alerts, aurora + 6 SDO/LASCO JPEGs). First launch shows quakes, hazards, Kp, CMEs, close approaches, bolides, outlooks, storm indices AND imagery. Unseedable by design: geomag/Open-Meteo/tides (need user locations/stations), Moon (computed live), DONKI FLR (disabled upstream).
+  - Now 32 of 33 sources seed offline (adds Moon computed live, Open-Meteo vortex proxy, DONKI flares via keyless CCMC API, and NOAA historical magnetic poles). First launch shows quakes, hazards, Kp, CMEs, flares, close approaches, bolides, outlooks, storm indices AND imagery. Unseedable by design: geomagnetic declination (needs a user location) and per-location Open-Meteo weather/AQ/marine.
 - [x] **Settings Multi-Location Management**:
-  - Full UI display and removal of saved locations and tide stations with real-time persistence.
+  - Full UI display and removal of saved locations with real-time persistence.
 - [x] **Events Detail Badges & Map Layer Toggles**:
   - `EventsView` detail dialog surfaces tsunami / PAGER / felt / NWS severity+expires+instruction / PHA / comet / CME speed badges (all previously ingested-but-hidden `extra_json`).
   - Desktop + web maps have smooth layer checkboxes (Quakes+Tsunami | Volcano+Fire | Storm/Flood/Alerts | Space weather | Other). Explicitly NOT a Google-Earth clone: Earth map stays 2D geographic; solar-system distances live in the separate Asteroids schematic. NEOs excluded from Earth map (no lat/lon) by design.
@@ -154,7 +154,7 @@ The core infrastructure and high-priority reliability fixes have been successful
 | **CME Arrival Countdown (needs upstream arrival ts)** | P3 | Superseded by SIM watch | SunView |
 | **Settings Location Delete/Reorder** | P2 | Completed | Desktop SettingsView |
 | **SSE Live Stream Endpoint** | P2 | Completed | Web API + Live badge (`/api/stream/live`) |
-| **Full Seed Coverage (33 Sources)** | P2 | 28/33 by design (5 need user config/live data) | Core / Offline Fixtures |
+| **Full Seed Coverage (33 Sources)** | P2 | 32/33: Moon, Open-Meteo vortex, DONKI flares and historical magnetic poles seeded; declination needs a user location | Core / Offline Fixtures |
 | **Remote Server Mode (RemoteStore + Settings toggle)** | P2 | Completed | Core + Desktop |
 | **Docker Compose Self-Hosting** | P2 | Completed | Packaging |
 | **Events Table Sorting + Map Cross-Linking** | P2 | Completed | Desktop EventsView + MapView + Web |
@@ -168,7 +168,7 @@ A full read-only audit was performed across core, desktop, web, packaging, docs 
 **Verdict at audit time: NOT 100%.** `pytest` was 68/68 green and CI/`vite build` passed,
 but the suite missed several release-blocking defects (single-point observation fixtures,
 no traversal/secret/pruning coverage). All P0/P1/P2 findings were fixed by
-2026-11-20 with regression tests (now 97/97); remaining non-blockers are listed
+2026-11-20 with regression tests (now 100/100); remaining non-blockers are listed
 explicitly.
 
 ### P0 — Security & correctness blockers (verified by repro)
@@ -181,7 +181,7 @@ explicitly.
 
 ### P1 — High severity
 
-- [x] **Auto-prune destroyed solar-cycle history** (`swpc:ssn_*`, `f107_*`) and missed `weather:*`/geomag/tides. Per-series retention policies + cycle exemptions; CLI and auto-prune share one method.
+- [x] **Auto-prune destroyed solar-cycle history** (`swpc:ssn_*`, `f107_*`) and missed `weather:*`/geomag. Per-series retention policies + cycle exemptions; CLI and auto-prune share one method.
 - [x] **SWPC alert IDs collided** on `product_id`; use composite `product_id:issue_datetime`; add duplicate-product test.
 - [x] **Open-Meteo local time mislabeled UTC** (`timezone=auto`); request UTC, parse naive as UTC, fix sunrise/sunset epoch.
 - [x] **CMEs plotted as terrestrial coordinates**: keep heliographic `stlat/stlon` in `extra`, leave `Event.latitude/longitude` null; exclude from Earth map markers.
@@ -206,11 +206,11 @@ explicitly.
 - [x] SSE initial payload without filesystem paths/blocking stats; bounded queues.
 - [x] OBS `?bg=transparent` body background; map refresh preserves camera; numeric event sorting; dialog parent/Show-on-Map; event expiry reconciliation.
 - [x] Docker image builds the frontend (multi-stage) instead of trusting committed `static/`; server default port 8123.
-- [x] Docs parity: README/PLAN claims (Now cards, Aurora “dial”, SBDB links, reorder, test count, seed 28/33).
+- [x] Docs parity: README/PLAN claims (Now cards, Aurora “dial”, SBDB links, reorder, test count, seed 32/33).
 
 ### Known residuals (not release blockers)
 
-- **Seed coverage**: 28/33 by design; Open-Meteo/geomag/tides need user locations/stations, Moon is computed live, DONKI FLR is disabled upstream.
+- **Seed coverage**: 32/33. Moon is computed at seed time from the bundled ephemeris; the location-free Open-Meteo stratospheric-vortex proxy and NOAA historical magnetic poles are seeded. Per-location weather/AQ/marine and geomagnetic declination need a user location. DONKI flares moved to the keyless CCMC DONKI-API after NASA's Sep-2026 migration.
 - **Alert history**: expired NWS/SPC alerts are hidden on maps/dashboard but retained in the Events history by design (audit trail).
 
 ### Verification rules (keep green)

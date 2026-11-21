@@ -19,7 +19,7 @@ The project is structured into three distinct layers with strict boundaries:
 ┌───────────────────────────▼────────────────────────────┐
 │  ssnow_core/ (Pure Python Engine & CLI)                     │
 │  - SQLite Store (WAL mode, R-Tree, Notifications)           │
-│  - Sources & Ingestion Adapters (32 enabled, 33 specs)      │
+│  - Sources & Ingestion Adapters (33 enabled, 33 specs)      │
 │  - Ingest Scheduler (run_due, backoff tracking)             │
 │  - Deterministic Physics Simulations (flare, impact)   │
 │  - Logging & Configuration                             │
@@ -61,7 +61,7 @@ The project is structured into three distinct layers with strict boundaries:
   - `store.py`: SQLite persistence layer (events, observations, snapshots, assets, notifications, R-tree).
   - `scheduler.py`: Ingestion scheduling with deterministic priority and exponential backoff.
   - `logging_config.py`: Centralized rotating log handler and formatters.
-  - `sources/`: Data adapters (USGS, SWPC Kp/X-ray/F10.7/RTSW wind/IMF/proton/Dst/solar-cycle, DONKI CME/GST, NeoWs, JPL CAD asteroids+comets, JPL fireballs, Sentry, SPC outlooks, IEM storm reports, SDO+LASCO imagery x5, NWS, OVATION aurora, Open-Meteo, Moon, Tides, etc.).
+  - `sources/`: Data adapters (USGS, SWPC Kp/X-ray/F10.7/RTSW wind/IMF/proton/Dst/solar-cycle, DONKI CME/GST, NeoWs, JPL CAD asteroids+comets, JPL fireballs, Sentry, SPC outlooks, IEM storm reports, SDO+LASCO imagery x5, NWS, OVATION aurora, Open-Meteo, Moon, NOAA historical magnetic poles, etc.).
   - `sim/`: Physics simulation scenarios (`flare_arrival`, `impact_crater`).
   - `seed.py`: Initial offline database population from bundled fixtures.
   - `cli.py`: Command-line interface (`ssnow ingest`, `ssnow stats`, `ssnow prune`, `ssnow gui`, `ssnow sim`).
@@ -71,12 +71,12 @@ The project is structured into three distinct layers with strict boundaries:
   - `views/`: Desktop view tabs (`now.py`, `events.py`, `map.py`, `sun.py`, `moon.py`, `neo.py`, `sources.py`, `settings.py`).
   - `views/widgets/`: Reusable Qt widgets (`sparkline.py`, `PhaseDisk`).
 - `ssnow_web/`
-  - `api.py`: FastAPI endpoints (incl. `/api/neos`, `/api/spc/outlooks`, `/api/fireballs`; `/api/sun/summary` carries bz/bt/dst/proton(10/50/100)/ssn/wind/aurora-max+oval/declination(primary loc); `/api/sun/images` (6 channels) + `/api/sim/cme-watch` (auto-fed ballistic SIM). `/api/weather/now` = per-location strip; POSTs optionally gated by `SSNOW_API_TOKEN`. CI (`.github/workflows/ci.yml`, free runners) runs pytest offscreen + web build + the no-Qt guard.
+  - `api.py`: FastAPI endpoints (incl. `/api/neos`, `/api/spc/outlooks`, `/api/fireballs`; `/api/sun/summary` carries bz/bt/dst/proton(10/50/100)/ssn/wind/aurora-max+oval/declination(primary loc)/historical magnetic poles+drift/forecast; `/api/sun/images` (6 channels) + `/api/sim/cme-watch` (auto-fed ballistic SIM). `/api/weather/now` = per-location strip; POSTs optionally gated by `SSNOW_API_TOKEN`. CI (`.github/workflows/ci.yml`, free runners) runs pytest offscreen + web build + the no-Qt guard.
   - `server.py`: Uvicorn launcher (`ssnow-web`).
   - `src/`: React TypeScript frontend (Dashboard, Events, MapView, SunView, MoonView, NeoView, SimView).
   - `vite.config.ts`: Builds into `/media/keith/Data2/ss-now/static/`.
 - `tests/`:
-  - `test_adapters.py`, `test_new_sources.py`: Fixture-based tests for all 32 enabled ingestion adapters.
+  - `test_adapters.py`, `test_new_sources.py`: Fixture-based tests for all 33 enabled ingestion adapters.
   - `test_remote.py`: `RemoteStore` HTTP client (MockTransport), read-only guarantees, imagery cache, secret handling.
   - `test_store.py`: Database operations, R-tree index, notifications, asset pruning, backoff.
   - `test_core_no_qt.py`: Enforces zero Qt imports in core.
@@ -138,7 +138,7 @@ Locations are stored as a JSON list under the `"locations"` setting key:
 When querying location, always check `locations = store.get_setting("locations") or []` and take `locations[0]` if available, falling back to `store.get_setting("location")` or the default (London).
 
 ### Remote server mode (desktop)
-- `ssnow_desktop` views receive either a local `Store` or a `RemoteStore` (`ssnow_core/remote.py`); both duck-type the same read API. Views must use only the portable subset: `query_events` (incl. `bbox`), `get_event_by_id`, `get_series`/`get_recent_series`/`get_latest_observation`, `latest_observations`, `get_setting`/`set_setting` (only `locations`, `tide_stations`, `nasa_api_key`, `retention_days`), `all_source_states`, `stats`, `latest_asset`, notification methods.
+- `ssnow_desktop` views receive either a local `Store` or a `RemoteStore` (`ssnow_core/remote.py`); both duck-type the same read API. Views must use only the portable subset: `query_events` (incl. `bbox`), `get_event_by_id`, `get_series`/`get_recent_series`/`get_latest_observation`, `latest_observations`, `get_setting`/`set_setting` (only `locations`, `nasa_api_key`, `retention_days`), `all_source_states`, `stats`, `latest_asset`, notification methods.
 - `RemoteStore` never exposes local-only methods (`upsert_events`, `export_backup`, …) — they raise. Ingest in remote mode is a server-side `POST /api/ingest`; the desktop only refreshes.
 - The NASA key is write-only over HTTP: `get_setting("nasa_api_key")` returns `""` even when one is stored, so a blank field means "keep" (SettingsView skips the POST when blank in remote mode).
 - Toggle lives in QSettings (`ssnow`/`ssnow`: `remote_mode`, `remote_base_url`, `remote_token`) and applies on restart. Unreachable server → standalone fallback with a logged warning. Defaults: `http://localhost:8123`.
@@ -178,8 +178,8 @@ Undelivered notifications are queried via `store.pending_notifications()` and ma
 - Rationale: we view more than Earth (Sun, Moon, asteroids, comets, solar wind). One geographic map + one solar-system schematic keeps it smooth and easy.
 
 ### Streamer / broadcaster tooling verdict: CONFIRMED
-- OBS F11 fullscreen + SSE `/api/stream/live` + threat dial + aurora verdict card + CME watch + multi-location weather/AQ/marine + tides + quake/tsunami/volcano layers = full all-in-one loop (space → aurora call → local weather → hazard map). Validated for space-weather and weather streamers; no extra providers required.
-- P1 gap ports (2026-11-21, all US public domain / NASA, MIT-keepable): RTSW IMF Bz/Bt (`swpc_mag`, active-spacecraft only) + RTSW wind rewrite (`swpc_wind`, SCN 26-21), GOES proton flux (`swpc_proton`, S-scale), Kyoto Dst (`swpc_dst`), JPL fireballs (`jpl_fireball`), SPC Day1-3 outlooks (`spc_outlook`, polygon fills + centroids). Threat dial and tray alerts are Bz/proton/Dst-aware.
+- OBS F11 fullscreen + SSE `/api/stream/live` + threat dial + aurora verdict card + CME watch + multi-location weather/AQ/marine + magnetic pole drift/anomaly reports + quake/tsunami/volcano layers = full all-in-one loop (space → aurora call → local weather → hazard map). Validated for space-weather and weather streamers; no extra providers required.
+- P1 gap ports (2026-11-21, all US public domain / NASA, MIT-keepable): RTSW IMF Bz/Bt (`swpc_mag`, active-spacecraft only) + RTSW wind rewrite (`swpc_wind`, SCN 26-21), GOES proton flux (`swpc_proton`, S-scale), Kyoto Dst (`swpc_dst`), JPL fireballs (`jpl_fireball`), SPC Day1-3 outlooks (`spc_outlook`, polygon fills + centroids), DONKI solar flares (`donki_flare`, keyless CCMC DONKI-API after the Sep-2026 api.nasa.gov migration). Threat dial and tray alerts are Bz/proton/Dst-aware.
 - Known gap: DONKI provides no CME arrival timestamp, so the widget shows latest-CME watch verdict rather than a fabricated countdown.
 
 ### Tsunami / volcano coverage: already ingested
@@ -202,6 +202,9 @@ Undelivered notifications are queried via `store.pending_notifications()` and ma
 ### RTSW notes (SCN 26-21)
 - `swpc_wind` now reads `json/rtsw/rtsw_wind_1m.json` and `swpc_mag` reads `json/rtsw/rtsw_mag_1m.json` (old `products/solar-wind/*` deleted 2026-04-30); filter `active=true`, keep `source` in `extra_json` provenance; tolerate quoted-string numbers.
 
+### DONKI notes (CCMC migration, Sep-2026)
+- CME/GST/FLR all use keyless `https://ccmc.gsfc.nasa.gov/DONKI-API/get/{CME,GST,FLR}` (the old `api.nasa.gov/DONKI/*` gateway now 404s/redirects). `requires_key=False` for all three; the NASA key setting now only serves NeoWs. Flare event IDs use the upstream `flrID` field (never `flareID`, which does not exist in payloads). GST uses the API max 60-day lookback so recent storm reports survive weekly ingests.
+
 ### Audit guardrails (2026-11-20, from the deep audit)
 - **Latest ≠ `get_series(limit=1)`**: `get_series()` is chronological (oldest first). Use
   `get_latest_observation()` for scalars and `get_recent_series()` for trend tails. API
@@ -221,7 +224,7 @@ Undelivered notifications are queried via `store.pending_notifications()` and ma
   Missing upstream event timestamps fall back to ingest time only with
   `extra_json.time_estimated = true` (badged in event detail views).
 - **Retention is per-series**: solar-cycle series (`swpc:ssn_*`, `swpc:f107_*`) are exempt
-  from the generic 90-day prune; `weather:*`/geomag/tides are included.
+  from the generic 90-day prune; `weather:*`/geomag are included (pole history is never pruned).
 - **Web security defaults**: loopback bind unless overridden, no `*`+credentials CORS,
   write token protects settings reads when configured, static assets are containment-checked.
 

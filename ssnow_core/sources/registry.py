@@ -11,6 +11,7 @@ from .dst import DstAdapter
 from .eonet import EONETAdapter
 from .fireball import FireballAdapter
 from .geomag import GeomagAdapter
+from .geomag_poles import GeomagPolesAdapter
 from .lsr import LSRAdapter
 from .moon import MoonAdapter
 from .neows import NeoWsAdapter
@@ -22,7 +23,6 @@ from .spc import SPCOutlookAdapter
 from .sun import SunImageryAdapter
 from .solarwind import MagAdapter, SolarWindAdapter
 from .swpc import F107Adapter, KpAdapter, KpForecastAdapter, AlertsAdapter, XrayAdapter
-from .tides import TidesAdapter
 from .usgs import USGSAdapter
 
 SPECS: dict[str, SourceSpec] = {
@@ -77,9 +77,8 @@ SPECS: dict[str, SourceSpec] = {
         domain="space-weather-cme",
         attribution="NASA DONKI / CCMC",
         license="NASA data",
-        url="https://api.nasa.gov/DONKI/CME",
+        url="https://ccmc.gsfc.nasa.gov/DONKI-API/get/CME",
         cadence_seconds=21600,
-        requires_key=True,
     ),
     "donki_flare": SourceSpec(
         id="donki_flare",
@@ -87,10 +86,8 @@ SPECS: dict[str, SourceSpec] = {
         domain="space-weather-flare",
         attribution="NASA DONKI / CCMC",
         license="NASA data",
-        url="https://api.nasa.gov/DONKI/FLR",
+        url="https://ccmc.gsfc.nasa.gov/DONKI-API/get/FLR",
         cadence_seconds=43200,
-        requires_key=True,
-        enabled=False,  # no working FLR route on the api.nasa.gov gateway (verified 404); flares via swpc_xray
     ),
     "swpc_kp_forecast": SourceSpec(
         id="swpc_kp_forecast",
@@ -173,24 +170,14 @@ SPECS: dict[str, SourceSpec] = {
         url="https://www.spc.noaa.gov/products/outlook/",
         cadence_seconds=1800,
     ),
-    "tides": SourceSpec(
-        id="tides",
-        name="NOAA Tide Predictions",
-        domain="tides",
-        attribution="NOAA Center for Operational Oceanographic Products",
-        license="US public domain data",
-        url="https://api.tidesandcurrents.noaa.gov/api/prod/datagetter",
-        cadence_seconds=43200,
-    ),
     "donki_gst": SourceSpec(
         id="donki_gst",
         name="NASA DONKI Geomagnetic Storms",
         domain="space-weather-gst",
         attribution="NASA DONKI / CCMC",
         license="NASA data",
-        url="https://api.nasa.gov/DONKI/GST",
+        url="https://ccmc.gsfc.nasa.gov/DONKI-API/get/GST",
         cadence_seconds=21600,
-        requires_key=True,
     ),
     "neows": SourceSpec(
         id="neows",
@@ -228,6 +215,15 @@ SPECS: dict[str, SourceSpec] = {
         license="NOAA data",
         url="https://www.ngdc.noaa.gov/geomag-web/calculators/calculateDeclination",
         cadence_seconds=86400,
+    ),
+    "geomag_poles": SourceSpec(
+        id="geomag_poles",
+        name="NOAA Historical Magnetic Poles",
+        domain="geomagnetism",
+        attribution="NOAA NCEI World Magnetic Model / IGRF",
+        license="NOAA data (US public domain)",
+        url="https://www.ngdc.noaa.gov/geomag/data/poles/NP.xy",
+        cadence_seconds=604800,
     ),
     "sun_imagery": SourceSpec(
         id="sun_imagery",
@@ -343,7 +339,6 @@ ADAPTER_CLASSES: dict[str, type[Adapter]] = {
     "swpc_dst": DstAdapter,
     "jpl_fireball": FireballAdapter,
     "spc_outlook": SPCOutlookAdapter,
-    "tides": TidesAdapter,
     "swpc_xray": XrayAdapter,
     "swpc_f107": F107Adapter,
     "donki_cme": CMEAdapter,
@@ -354,6 +349,7 @@ ADAPTER_CLASSES: dict[str, type[Adapter]] = {
     "nws_alerts": NWSAlertsAdapter,
     "aurora": AuroraAdapter,
     "geomag": GeomagAdapter,
+    "geomag_poles": GeomagPolesAdapter,
     "sun_imagery": SunImageryAdapter,
     "sun_sdo193": SunImageryAdapter,
     "sun_sdo304": SunImageryAdapter,

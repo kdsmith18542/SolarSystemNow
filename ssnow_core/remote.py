@@ -33,7 +33,7 @@ from .models import Event, Observation, SourceState
 
 logger = get_logger("remote")
 
-WRITABLE_SETTINGS = ("locations", "tide_stations", "nasa_api_key", "retention_days")
+WRITABLE_SETTINGS = ("locations", "nasa_api_key", "retention_days")
 
 
 class RemoteReadOnlyError(RuntimeError):
@@ -139,6 +139,13 @@ class RemoteStore:
         add("/api/spc/outlooks", {"limit": 50})
         add("/api/fireballs", {"limit": 100})
         add("/api/sim/cme-watch")
+        add("/api/events", {"limit": 5, "categories": "geomagnetic_storm"})
+        for pole in ("north", "south"):
+            for field in ("lat", "lon"):
+                add("/api/obs", {"source": "geomag_poles", "series": f"geomag_pole:{pole}:{field}", "limit": 1, "order": "desc"})
+                add("/api/obs", {"source": "geomag_poles", "series": f"geomag_pole:{pole}:{field}", "limit": 2, "order": "desc"})
+            for field in ("lat_forecast", "lon_forecast"):
+                add("/api/obs", {"source": "geomag_poles", "series": f"geomag_pole:{pole}:{field}", "limit": 1, "order": "desc"})
 
         # Events used by Now / Events / Map / alerts.
         add("/api/events", {"limit": 1, "categories": "earthquake"})
@@ -205,15 +212,6 @@ class RemoteStore:
             add(
                 "/api/obs",
                 {"source": "geomag", "series": f"geomag:{key}:declination", "limit": 1, "order": "desc"},
-            )
-        try:
-            stations = [s for s in (self.get_setting("tide_stations") or []) if isinstance(s, dict)]
-        except Exception:  # noqa: BLE001
-            stations = []
-        if stations:
-            add(
-                "/api/obs",
-                {"source": "tides", "series": f"tides:{stations[0].get('id')}:height", "limit": 1, "order": "desc"},
             )
 
         seen: set[tuple[str, str]] = set()

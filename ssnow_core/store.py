@@ -304,6 +304,25 @@ class Store:
         self._normalize_legacy_event_timestamps()
         self._backfill_rtree()
         self._scrub_persisted_secrets()
+        self._purge_removed_sources()
+        self._conn.commit()
+
+    def _purge_removed_sources(self) -> None:
+        """Remove data for sources deleted from the product (idempotent)."""
+        from pathlib import Path
+
+        rows = self._conn.execute(
+            "SELECT path FROM snapshots WHERE source = 'tides' OR source LIKE 'tides:%'"
+        ).fetchall()
+        for (path,) in rows:
+            try:
+                Path(path).unlink(missing_ok=True)
+            except OSError:
+                pass
+        self._conn.execute("DELETE FROM snapshots WHERE source = 'tides' OR source LIKE 'tides:%'")
+        self._conn.execute("DELETE FROM observations WHERE source = 'tides'")
+        self._conn.execute("DELETE FROM source_state WHERE source_id = 'tides'")
+        self._conn.execute("DELETE FROM settings WHERE key = 'tide_stations'")
         self._conn.commit()
 
     def _migrate_assets_table(self) -> None:
@@ -883,7 +902,6 @@ class Store:
             ("openmeteo", "marine:%", None),
             ("openmeteo", "strato:%", None),
             ("geomag", "geomag:%", None),
-            ("tides", "tides:%", None),
             ("moon", "moon:%", None),
             ("solarwind", "solarwind:%", None),
         ]

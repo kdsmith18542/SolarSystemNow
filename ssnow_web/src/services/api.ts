@@ -85,9 +85,18 @@ export interface SimScenario {
 
 export interface Settings {
   locations: Array<{ name: string; lat: number; lon: number; key: string }>;
-  tide_stations: Array<{ id: string; name: string }>;
   nasa_api_key: boolean;
   retention_days: number;
+}
+
+export interface MagneticPole {
+  lat: number;
+  lon: number;
+  year: number | null;
+  ts: string;
+  drift_km: number | null;
+  previous: { lat: number; lon: number; year: number | null } | null;
+  forecast: { lat: number; lon: number; year: number | null } | null;
 }
 
 export interface SunSummary {
@@ -107,6 +116,7 @@ export interface SunSummary {
   aurora_oval: { value: number; ts: string } | null;
   aurora_mean: { value: number; ts: string } | null;
   declination: { value: number; ts: string; location: string } | null;
+  poles: { north: MagneticPole | null; south: MagneticPole | null };
   ssn: { value: number; ts: string } | null;
   ssn_predicted: { value: number; ts: string } | null;
 }

@@ -78,29 +78,6 @@ class SettingsView(BaseView):
         loc_list_row.addWidget(loc_del_btn)
         form.addRow("Saved locations:", loc_list_row)
 
-        # Tide station inputs
-        self.tide_id = QLineEdit()
-        self.tide_id.setPlaceholderText("e.g. 8454000")
-        self.tide_name = QLineEdit()
-        self.tide_name.setPlaceholderText("Label")
-        tide_row = QHBoxLayout()
-        tide_row.addWidget(self.tide_id)
-        tide_row.addWidget(self.tide_name)
-        tide_add = QPushButton("Add tide station")
-        tide_add.clicked.connect(self._add_tide_station)
-        tide_row.addWidget(tide_add)
-        form.addRow("Add tide station:", tide_row)
-
-        # Saved tide stations list & delete
-        self.tide_list = QListWidget()
-        self.tide_list.setMaximumHeight(80)
-        tide_list_row = QHBoxLayout()
-        tide_list_row.addWidget(self.tide_list)
-        tide_del_btn = QPushButton("Remove selected")
-        tide_del_btn.clicked.connect(self._delete_tide_station)
-        tide_list_row.addWidget(tide_del_btn)
-        form.addRow("Saved tide stations:", tide_list_row)
-
         self.nasa_key = QLineEdit()
         self.nasa_key.setEchoMode(QLineEdit.EchoMode.Password)
         self.nasa_key.setPlaceholderText("Leave blank to keep the stored key")
@@ -168,14 +145,6 @@ class SettingsView(BaseView):
             item.setData(100, loc.get("key"))
             self.loc_list.addItem(item)
 
-        self.tide_list.clear()
-        tide_stations = [s for s in (self.store.get_setting("tide_stations") or []) if isinstance(s, dict)]
-        for station in tide_stations:
-            item_text = f"{station.get('name', station.get('id'))} (ID: {station.get('id')})"
-            item = QListWidgetItem(item_text)
-            item.setData(100, station.get("id"))
-            self.tide_list.addItem(item)
-
         # Don't clobber fields the user is editing on every ingest refresh.
         if not self._fields_loaded:
             self.nasa_key.setText(self.store.get_setting("nasa_api_key") or "")
@@ -213,32 +182,6 @@ class SettingsView(BaseView):
         locations = [l for l in (self.store.get_setting("locations") or []) if isinstance(l, dict)]
         locations = [l for l in locations if l.get("key") != key]
         if not self._write_setting("locations", locations):
-            return
-        self.refresh()
-
-    def _add_tide_station(self) -> None:
-        station_id = self.tide_id.text().strip()
-        name = self.tide_name.text().strip() or station_id
-        if not station_id:
-            QMessageBox.warning(self, "Invalid input", "Enter a NOAA tide station ID.")
-            return
-        stations = [s for s in (self.store.get_setting("tide_stations") or []) if isinstance(s, dict)]
-        stations = [s for s in stations if s.get("id") != station_id]
-        stations.insert(0, {"id": station_id, "name": name})
-        if not self._write_setting("tide_stations", stations):
-            return
-        self.tide_id.clear()
-        self.tide_name.clear()
-        self.refresh()
-
-    def _delete_tide_station(self) -> None:
-        selected = self.tide_list.currentItem()
-        if not selected:
-            return
-        station_id = selected.data(100)
-        stations = [s for s in (self.store.get_setting("tide_stations") or []) if isinstance(s, dict)]
-        stations = [s for s in stations if s.get("id") != station_id]
-        if not self._write_setting("tide_stations", stations):
             return
         self.refresh()
 

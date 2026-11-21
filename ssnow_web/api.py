@@ -391,6 +391,41 @@ def sun_summary() -> dict[str, Any]:
     if locations:
         key = locations[0].get("key") or f"{locations[0].get('lat')},{locations[0].get('lon')}"
         declination = store.get_latest_observation("geomag", f"geomag:{key}:declination")
+    def _pole(hemisphere: str) -> dict[str, Any] | None:
+        lat = store.get_latest_observation("geomag_poles", f"geomag_pole:{hemisphere}:lat")
+        lon = store.get_latest_observation("geomag_poles", f"geomag_pole:{hemisphere}:lon")
+        if not lat or not lon:
+            return None
+        recent_lat = store.get_recent_series("geomag_poles", f"geomag_pole:{hemisphere}:lat", limit=2)
+        recent_lon = store.get_recent_series("geomag_poles", f"geomag_pole:{hemisphere}:lon", limit=2)
+        previous = None
+        drift_km = None
+        if len(recent_lat) >= 2 and len(recent_lon) >= 2:
+            prev_lat, prev_lon = recent_lat[0].value, recent_lon[0].value
+            previous = {"lat": prev_lat, "lon": prev_lon, "year": recent_lat[0].extra_json.get("year")}
+            from ssnow_core.sources.geo import haversine_km
+            drift_km = round(haversine_km(prev_lat, prev_lon, lat.value, lon.value), 1)
+        forecast_lat = store.get_latest_observation("geomag_poles", f"geomag_pole:{hemisphere}:lat_forecast")
+        forecast_lon = store.get_latest_observation("geomag_poles", f"geomag_pole:{hemisphere}:lon_forecast")
+        forecast = None
+        if forecast_lat and forecast_lon:
+            forecast = {
+                "lat": forecast_lat.value,
+                "lon": forecast_lon.value,
+                "year": forecast_lat.extra_json.get("year"),
+            }
+        return {
+            "lat": lat.value,
+            "lon": lon.value,
+            "year": lat.extra_json.get("year"),
+            "ts": lat.ts.isoformat(),
+            "drift_km": drift_km,
+            "previous": previous,
+            "forecast": forecast,
+        }
+
+    poles = {"north": _pole("north"), "south": _pole("south")}
+
     ssn = store.get_latest_observation("swpc", "swpc:ssn_observed")
     ssn_pred = store.get_latest_observation("swpc", "swpc:ssn_predicted")
     return {
@@ -412,6 +447,7 @@ def sun_summary() -> dict[str, Any]:
         "declination": {**_point(declination), "location": locations[0].get("name")} if declination else None,
         "ssn": _point(ssn),
         "ssn_predicted": _point(ssn_pred),
+        "poles": poles,
     }
 
 
@@ -562,16 +598,9 @@ class LocationModel(BaseModel):
     key: str | None = Field(default=None, max_length=64)
 
 
-class TideStationModel(BaseModel):
-    model_config = ConfigDict(extra="allow", str_strip_whitespace=True)
-    id: str = Field(min_length=1, max_length=32)
-    name: str = Field(default="", max_length=120)
-
-
 class SettingsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     locations: list[LocationModel] | None = None
-    tide_stations: list[TideStationModel] | None = None
     nasa_api_key: str | None = Field(default=None, max_length=200)
     retention_days: int | None = Field(default=None, ge=1, le=3650)
 
@@ -584,7 +613,6 @@ def get_settings(request: Request) -> dict[str, Any]:
     key = store.get_setting("nasa_api_key")
     return {
         "locations": store.get_setting("locations", []),
-        "tide_stations": store.get_setting("tide_stations", []),
         "nasa_api_key": bool(key),
         "retention_days": store.get_setting("retention_days", 90),
     }
@@ -597,8 +625,6 @@ def set_settings(body: SettingsUpdate, request: Request) -> dict[str, Any]:
     values: dict[str, Any] = {}
     if body.locations is not None:
         values["locations"] = [loc.model_dump() for loc in body.locations]
-    if body.tide_stations is not None:
-        values["tide_stations"] = [station.model_dump() for station in body.tide_stations]
     if "nasa_api_key" in body.model_fields_set:
         values["nasa_api_key"] = body.nasa_api_key or None
     if body.retention_days is not None:

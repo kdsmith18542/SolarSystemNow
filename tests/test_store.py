@@ -276,3 +276,25 @@ def test_concurrent_store_access_is_thread_safe(tmp_store):
     with ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(worker, range(8)))
     assert tmp_store.event_count() >= 2
+
+
+def test_removed_tides_data_purged_on_reopen(tmp_store):
+    from pathlib import Path
+
+    snap = tmp_store.save_snapshot("tides:8454000", "https://example/tides", b"{}", "application/json")
+    tmp_store.upsert_observations([
+        Observation(source="tides", series="tides:8454000:height", ts=_NOW, value=1.0)
+    ])
+    tmp_store.set_setting("tide_stations", [{"id": "8454000", "name": "Port"}])
+    tmp_store.begin_attempt("tides", _NOW)
+
+    tmp_store.close()
+    reopened = Store(tmp_store.db_path)
+    try:
+        assert reopened._conn.execute("SELECT COUNT(*) FROM observations WHERE source = 'tides'").fetchone()[0] == 0
+        assert reopened._conn.execute("SELECT COUNT(*) FROM snapshots WHERE source LIKE 'tides:%'").fetchone()[0] == 0
+        assert reopened._conn.execute("SELECT COUNT(*) FROM source_state WHERE source_id = 'tides'").fetchone()[0] == 0
+        assert reopened.get_setting("tide_stations") is None
+        assert not Path(snap.path).exists()
+    finally:
+        reopened.close()

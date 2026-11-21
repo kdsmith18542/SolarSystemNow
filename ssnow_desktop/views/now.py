@@ -234,7 +234,7 @@ class NowView(BaseView):
         outer.addLayout(grid)
 
         self.footer = QLabel(
-            "32 live sources · USGS · NOAA SWPC/SPC/NWS · NASA JPL/SDO/DONKI · EONET · Open-Meteo · IEM"
+            "33 live sources · USGS · NOAA SWPC/SPC/NWS · NASA JPL/SDO/DONKI · EONET · Open-Meteo · IEM"
         )
         self.footer.setObjectName("source")
         outer.addWidget(self.footer)

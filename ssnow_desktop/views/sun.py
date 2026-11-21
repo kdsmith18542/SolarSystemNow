@@ -76,6 +76,19 @@ class SunView(BaseView):
         form.addRow("Dst index:", self.dst_lbl)
         self.decl_lbl = QLabel("—")
         form.addRow("Magnetic declination (loc):", self.decl_lbl)
+        self.poles_lbl = QLabel("—")
+        self.poles_lbl.setWordWrap(True)
+        form.addRow("Magnetic pole drift:", self.poles_lbl)
+        self.anomaly_lbl = QLabel(
+            '<a href="https://www.ncei.noaa.gov/maps/historical-declination/">Historical pole map 1590–2025</a> · '
+            '<a href="https://www.ncei.noaa.gov/products/world-magnetic-model">WMM / South Atlantic Anomaly reports</a>'
+        )
+        self.anomaly_lbl.setOpenExternalLinks(True)
+        self.anomaly_lbl.setWordWrap(True)
+        form.addRow("Geomagnetic reports:", self.anomaly_lbl)
+        self.storms_lbl = QLabel("—")
+        self.storms_lbl.setWordWrap(True)
+        form.addRow("Recent storm reports:", self.storms_lbl)
         self.ssn_lbl = QLabel("—")
         form.addRow("Sunspot number:", self.ssn_lbl)
         self.cme_lbl = QLabel("—")
@@ -89,6 +102,37 @@ class SunView(BaseView):
         form.addRow("Imagery links:", self.links_lbl)
         layout.addLayout(form)
         layout.addStretch(1)
+
+    @staticmethod
+    def _fmt_pole(lat, lon, year) -> str:
+        if lat is None or lon is None:
+            return "—"
+        ns = "N" if lat >= 0 else "S"
+        ew = "E" if lon >= 0 else "W"
+        suffix = f" · {year}" if year else ""
+        return f"{abs(lat):.2f}°{ns} {abs(lon):.2f}°{ew}{suffix}"
+
+    def _pole_text(self, hemisphere: str) -> str:
+        from ssnow_core.sources.geo import haversine_km
+
+        lat = self.store.get_latest_observation("geomag_poles", f"geomag_pole:{hemisphere}:lat")
+        lon = self.store.get_latest_observation("geomag_poles", f"geomag_pole:{hemisphere}:lon")
+        if not lat or not lon:
+            return "—"
+        recent_lat = self.store.get_recent_series("geomag_poles", f"geomag_pole:{hemisphere}:lat", limit=2)
+        recent_lon = self.store.get_recent_series("geomag_poles", f"geomag_pole:{hemisphere}:lon", limit=2)
+        text = f"{hemisphere.title()} {self._fmt_pole(lat.value, lon.value, lat.extra_json.get('year'))}"
+        if len(recent_lat) >= 2 and len(recent_lon) >= 2:
+            drift = haversine_km(recent_lat[0].value, recent_lon[0].value, lat.value, lon.value)
+            text += f" · {drift:.0f} km/yr"
+        forecast_lat = self.store.get_latest_observation("geomag_poles", f"geomag_pole:{hemisphere}:lat_forecast")
+        forecast_lon = self.store.get_latest_observation("geomag_poles", f"geomag_pole:{hemisphere}:lon_forecast")
+        if forecast_lat and forecast_lon:
+            text += f" · 2030 {self._fmt_pole(forecast_lat.value, forecast_lon.value, forecast_lat.extra_json.get('year'))}"
+        return text
+
+    def _refresh_poles(self) -> None:
+        self.poles_lbl.setText(self._pole_text("north") + "\n" + self._pole_text("south"))
 
     def refresh(self) -> None:
         kp = self.store.get_latest_observation("swpc", "swpc:kp")
@@ -201,6 +245,18 @@ class SunView(BaseView):
                 self.decl_lbl.setText(f"no geomag sample yet for {loc.get('name', 'primary location')}")
         else:
             self.decl_lbl.setText("no location configured")
+        self._refresh_poles()
+        storms = self.store.query_events(categories=["geomagnetic_storm"], limit=5)
+        if storms:
+            self.storms_lbl.setText(
+                "\n".join(
+                    f"{fmt_ts(e.occurred_at)} · {e.title}"
+                    + (f" · Kp {e.magnitude:.1f}" if e.magnitude is not None else "")
+                    for e in storms
+                )
+            )
+        else:
+            self.storms_lbl.setText("—")
         ssn = self.store.get_latest_observation("swpc", "swpc:ssn_observed")
         ssn_p = self.store.get_latest_observation("swpc", "swpc:ssn_predicted")
         if ssn:

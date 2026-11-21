@@ -14,6 +14,7 @@ from ssnow_core.sources.donki import GSTAdapter
 from ssnow_core.sources.dst import DstAdapter
 from ssnow_core.sources.fireball import FireballAdapter
 from ssnow_core.sources.geomag import GeomagAdapter
+from ssnow_core.sources.geomag_poles import GeomagPolesAdapter
 from ssnow_core.sources.lsr import LSRAdapter
 from ssnow_core.sources.neows import NeoWsAdapter
 from ssnow_core.sources.nws import NWSAlertsAdapter
@@ -24,7 +25,6 @@ from ssnow_core.sources.sentry import SentryAdapter
 from ssnow_core.sources.solarwind import MagAdapter, SolarWindAdapter
 from ssnow_core.sources.spc import SPCOutlookAdapter
 from ssnow_core.sources.swpc import AlertsAdapter, F107Adapter, KpForecastAdapter, XrayAdapter
-from ssnow_core.sources.tides import TidesAdapter
 from conftest import load_fixture
 
 
@@ -167,6 +167,27 @@ def test_geomag_ingest(tmp_store):
     assert abs(series[0].value - 1.23079) < 1e-6
 
 
+def test_geomag_poles_parse_and_latest(tmp_store):
+    adapter = GeomagPolesAdapter(SPECS["geomag_poles"])
+    observations = adapter.parse_seed(load_fixture("geomag_poles.json"), _now())
+    assert len(observations) > 1700
+
+    north = [o for o in observations if o.series == "geomag_pole:north:lat"]
+    assert north[0].ts.year == 1590
+    assert north[0].value == pytest.approx(73.923)
+    assert north[-1].ts.year == 2025
+    assert north[-1].value == pytest.approx(85.778)
+    forecast = [o for o in observations if o.series == "geomag_pole:north:lat_forecast"]
+    assert forecast[-1].ts.year == 2030
+    assert forecast[-1].value == pytest.approx(84.723)
+
+    tmp_store.upsert_observations(observations)
+    latest = tmp_store.get_latest_observation("geomag_poles", "geomag_pole:north:lat")
+    assert latest is not None and latest.value == pytest.approx(85.778)
+    assert latest.extra_json["kind"] == "observed"
+    assert tmp_store.get_latest_observation("geomag_poles", "geomag_pole:north:lat_forecast").value == pytest.approx(84.723)
+
+
 def test_openmeteo_marine_aq_vortex_parse(tmp_store):
     adapter = OpenMeteoAdapter(SPECS["openmeteo"])
     _, mobs = adapter.parse_marine(load_fixture("openmeteo_marine.json"), "k", _now())
@@ -262,18 +283,6 @@ def test_spc_outlook_polygons(tmp_store):
     assert enh.magnitude_unit == "SPC"
     assert enh.latitude is not None and enh.longitude is not None
     assert enh.extra_json["geometry"]["type"] == "MultiPolygon"
-
-
-def test_tides_ingest(tmp_store):
-    tmp_store.set_setting("tide_stations", [{"id": "8454000", "name": "Providence"}])
-    adapter = TidesAdapter(SPECS["tides"])
-    report = adapter.ingest(tmp_store, _client(load_fixture("tides.json")), _now())
-    assert report.ok
-    series = tmp_store.get_series("tides", "tides:8454000:height")
-    assert len(series) == 4
-    assert series[1].value == 1.724
-    assert series[1].unit == "m"
-    assert series[1].extra_json["type"] == "H"
 
 
 def test_cad_ingest_asteroids_and_comets(tmp_store):

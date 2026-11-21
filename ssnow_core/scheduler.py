@@ -30,7 +30,7 @@ def run_due(store: Store, client: httpx.Client | None = None, now: datetime | No
     try:
         due = store.due_sources(now)
         # Deterministic ordering: USGS before EONET for quake cross-linking.
-        priority = ["usgs", "eonet", "nws_alerts", "openmeteo", "tides", "swpc_kp", "swpc_kp_forecast", "swpc_alerts", "swpc_xray", "swpc_f107", "swpc_wind", "donki_cme", "donki_gst", "neows", "aurora", "geomag", "sun_imagery", "moon"]
+        priority = ["usgs", "eonet", "nws_alerts", "openmeteo", "swpc_kp", "swpc_kp_forecast", "swpc_alerts", "swpc_xray", "swpc_f107", "swpc_wind", "donki_cme", "donki_flare", "donki_gst", "neows", "aurora", "geomag", "geomag_poles", "sun_imagery", "moon"]
         due = sorted(due, key=lambda sid: (priority.index(sid) if sid in priority else 99, sid))
         logger.info("Found %d due sources to ingest", len(due))
         for source_id in due:

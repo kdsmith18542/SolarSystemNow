@@ -3,7 +3,7 @@
 [![CI](https://github.com/kdsmith18542/SolarSystemNow/actions/workflows/ci.yml/badge.svg)](https://github.com/kdsmith18542/SolarSystemNow/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/kdsmith18542/SolarSystemNow)](https://github.com/kdsmith18542/SolarSystemNow/releases)
 
-Linux desktop + local web dashboard for reviewing **current and historical real data** about Earth and its solar neighborhood: earthquakes, tsunamis, volcanoes, storms, wildfires, floods, weather, tides, space weather (Kp, solar wind, IMF Bz, flares, protons, Dst), the Sun (SDO/LASCO imagery), the Moon, and near-Earth asteroids, comets, fireballs and impact risk. No fabricated data, no server required, no hosting costs.
+Linux desktop + local web dashboard for reviewing **current and historical real data** about Earth and its solar neighborhood: earthquakes, tsunamis, volcanoes, storms, wildfires, floods, weather, space weather (Kp, solar wind, IMF Bz, flares, protons, Dst), the Sun (SDO/LASCO imagery), the Moon, and near-Earth asteroids, comets, fireballs and impact risk. No fabricated data, no server required, no hosting costs.
 
 ![Desktop Now view](docs/screenshots/desktop-now.png)
 *Desktop: composite threat dial, Kp card, aurora verdict, quake + CME watch, Kp trend (Bz/proton/Dst live in the Sun view and streamer ribbon).*
@@ -16,10 +16,10 @@ Linux desktop + local web dashboard for reviewing **current and historical real 
 
 ## Architecture
 
-- `ssnow_core/` — pure-Python library: 32 ingestion adapters, SQLite store (WAL + R-Tree + notifications), scheduler, deterministic physics sims, CLI. No Qt imports (enforced by test).
+- `ssnow_core/` — pure-Python library: 33 ingestion adapters, SQLite store (WAL + R-Tree + notifications), scheduler, deterministic physics sims, CLI. No Qt imports (enforced by test).
 - `ssnow_desktop/` — PySide6/Qt GUI: Now, Events, Map, Sun, Moon, Asteroids, Sources, Settings. System-tray alerts, OBS streamer mode (F11).
 - `ssnow_web/` — FastAPI + React/Tailwind/MapLibre, SSE live stream, builds into `static/`.
-- Data sources (all free, public domain / permissive): USGS, NASA EONET, Open-Meteo, NOAA SWPC (Kp, X-ray, F10.7, RTSW wind/IMF, protons, Dst, solar cycle), NASA DONKI, JPL NeoWs/CAD/fireballs/Sentry, NOAA SPC outlooks, IEM storm reports, NWS alerts, OVATION aurora, NDBC tides, geomag, SDO/LASCO imagery, Skyfield Moon.
+- Data sources (all free, public domain / permissive): USGS, NASA EONET, Open-Meteo, NOAA SWPC (Kp, X-ray, F10.7, RTSW wind/IMF, protons, Dst, solar cycle), NASA DONKI, JPL NeoWs/CAD/fireballs/Sentry, NOAA SPC outlooks, IEM storm reports, NWS alerts, OVATION aurora, geomag + historical magnetic poles, SDO/LASCO imagery, Skyfield Moon.
 - Local SQLite database + gzipped raw snapshots; steady-state storage is single-digit GB.
 
 ## Setup

@@ -11,6 +11,7 @@ test('dashboard renders hero, nav and seeded events', async ({ page }) => {
   await expect(page.getByText('Solar System Now')).toBeVisible();
   await expect(page.getByText('COMPOSITE THREAT')).toBeVisible();
   await expect(page.getByText('RECENT EVENTS')).toBeVisible();
+  await expect(page.getByText('Tide level')).toHaveCount(0);
   // First-run seeding guarantees real fixture events in a fresh data dir.
   await expect(page.getByText(/earthquake/i).first()).toBeVisible({ timeout: 15_000 });
 
@@ -24,6 +25,8 @@ test('tabs navigate to Events and Sun views', async ({ page }) => {
 
   await page.getByRole('button', { name: /^Sun$/ }).click();
   await expect(page.getByText('Kp Trend (last 200 points)')).toBeVisible();
+  await expect(page.getByText('Magnetic Pole Drift')).toBeVisible();
+  await expect(page.getByText('Geomagnetic Disturbance Reports')).toBeVisible();
 });
 
 test('OBS transparent mode clears the body background', async ({ page }) => {

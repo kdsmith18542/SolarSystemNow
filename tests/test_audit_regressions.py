@@ -103,7 +103,7 @@ def test_prune_assets_prefix_keeps_budget_per_channel(tmp_store):
     assert dict(rows) == {"sun_a": 1, "sun_b": 1}
 
 
-def test_prune_preserves_solar_cycle_and_covers_weather_geomag_tides(tmp_store):
+def test_prune_preserves_solar_cycle_and_covers_weather_geomag(tmp_store):
     old = NOW - timedelta(days=400)
     tmp_store.upsert_observations(
         [
@@ -113,12 +113,11 @@ def test_prune_preserves_solar_cycle_and_covers_weather_geomag_tides(tmp_store):
             Observation(source="openmeteo", series="weather:Home:temperature_2m", ts=old, value=10.0),
             Observation(source="openmeteo", series="air:Home:us_aqi", ts=old, value=10.0),
             Observation(source="geomag", series="geomag:Home:declination", ts=old, value=1.0),
-            Observation(source="tides", series="tides:8454000:height", ts=old, value=1.0),
             Observation(source="aurora", series="aurora:intensity_max", ts=old, value=1.0),
         ]
     )
     deleted = tmp_store.prune_observations(90)
-    assert deleted == 6
+    assert deleted == 5
     remaining = {
         row[0]
         for row in tmp_store._conn.execute("SELECT series FROM observations").fetchall()
@@ -421,7 +420,7 @@ def test_api_sun_summary_uses_latest_observation(api_client):
 def test_api_sources_lists_never_run_specs(api_client):
     data = api_client.get("/api/sources").json()
     assert len(data["sources"]) == len(SPECS)
-    assert sum(1 for row in data["sources"] if row["enabled"]) == 32
+    assert sum(1 for row in data["sources"] if row["enabled"]) == 33
 
 
 def test_api_settings_validation_prevents_corruption(api_client):

@@ -7,6 +7,13 @@ function fmtTs(ts: string) {
   return new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
 }
 
+function fmtPole(p: { lat: number; lon: number; year: number | null } | null) {
+  if (!p) return '—';
+  const ns = p.lat >= 0 ? 'N' : 'S';
+  const ew = p.lon >= 0 ? 'E' : 'W';
+  return `${Math.abs(p.lat).toFixed(2)}°${ns} ${Math.abs(p.lon).toFixed(2)}°${ew}${p.year ? ` · ${p.year}` : ''}`;
+}
+
 function Sparkline({ points }: { points: { x: number; y: number }[] }) {
   if (points.length < 2) return <div className="h-32 flex items-center justify-center text-slate-500">No data</div>;
   const w = 600, h = 160;
@@ -127,7 +134,51 @@ export default function SunView() {
           <div className="text-slate-300">° {summary?.declination ? (summary.declination.value >= 0 ? 'E of true north' : 'W of true north') : 'compass correction'}</div>
           <div className="text-xs text-slate-500">{summary?.declination ? `${summary.declination.location} · ${fmtTs(summary.declination.ts)} · NOAA WMM` : 'primary location · NOAA'}</div>
         </div>
+        <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-800">
+          <h2 className="text-sm text-slate-400 uppercase tracking-wider mb-2">Magnetic Pole Drift</h2>
+          <div className="text-sm text-slate-200">North {fmtPole(summary?.poles.north ?? null)}</div>
+          <div className="text-xs text-slate-400 mb-2">
+            {summary?.poles.north?.drift_km != null ? `${summary.poles.north.drift_km.toFixed(0)} km/yr` : 'drift —'}
+            {summary?.poles.north?.forecast ? ` · 2030 forecast ${fmtPole(summary.poles.north.forecast)}` : ''}
+          </div>
+          <div className="text-sm text-slate-200">South {fmtPole(summary?.poles.south ?? null)}</div>
+          <div className="text-xs text-slate-400 mb-2">
+            {summary?.poles.south?.drift_km != null ? `${summary.poles.south.drift_km.toFixed(0)} km/yr` : 'drift —'}
+            {summary?.poles.south?.forecast ? ` · 2030 forecast ${fmtPole(summary.poles.south.forecast)}` : ''}
+          </div>
+          <div className="text-[10px] text-slate-500">
+            <a className="underline hover:text-slate-300" href="https://www.ncei.noaa.gov/maps/historical-declination/" target="_blank" rel="noreferrer">Historical pole map 1590–2025</a>
+            {' · '}
+            <a className="underline hover:text-slate-300" href="https://www.ncei.noaa.gov/products/world-magnetic-model" target="_blank" rel="noreferrer">WMM + South Atlantic Anomaly reports</a>
+          </div>
+        </div>
+        <StormReports />
       </div>
+    </div>
+  );
+}
+
+function StormReports() {
+  const tick = useRefreshTick();
+  const [storms, setStorms] = useState<Array<{ id: string; title: string; occurred_at: string | null; magnitude: number | null; url: string | null }>>([]);
+  useEffect(() => {
+    api.events({ categories: 'geomagnetic_storm', limit: 5 }).then(r => setStorms(r.events)).catch(() => null);
+  }, [tick]);
+  return (
+    <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-800 md:col-span-2">
+      <h2 className="text-sm text-slate-400 uppercase tracking-wider mb-2">Geomagnetic Disturbance Reports</h2>
+      {storms.length > 0 ? (
+        <ul className="space-y-1 text-sm text-slate-300">
+          {storms.map(s => (
+            <li key={s.id} className="flex flex-wrap gap-2">
+              <span className="text-slate-500">{s.occurred_at ? fmtTs(s.occurred_at) : '—'}</span>
+              <span className="flex-1">{s.title}</span>
+              {s.magnitude != null && <span className="text-violet-300">Kp {s.magnitude.toFixed(1)}</span>}
+              {s.url && <a className="underline text-slate-400 hover:text-slate-200" href={s.url} target="_blank" rel="noreferrer">source</a>}
+            </li>
+          ))}
+        </ul>
+      ) : <div className="text-slate-500 text-sm">No recent geomagnetic storm reports.</div>}
     </div>
   );
 }

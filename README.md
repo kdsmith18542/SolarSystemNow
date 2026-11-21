@@ -1,5 +1,8 @@
 # Solar System Now (ss-now)
 
+[![CI](https://github.com/kdsmith18542/SolarSystemNow/actions/workflows/ci.yml/badge.svg)](https://github.com/kdsmith18542/SolarSystemNow/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/kdsmith18542/SolarSystemNow)](https://github.com/kdsmith18542/SolarSystemNow/releases)
+
 Linux desktop + local web dashboard for reviewing **current and historical real data** about Earth and its solar neighborhood: earthquakes, tsunamis, volcanoes, storms, wildfires, floods, weather, tides, space weather (Kp, solar wind, IMF Bz, flares, protons, Dst), the Sun (SDO/LASCO imagery), the Moon, and near-Earth asteroids, comets, fireballs and impact risk. No fabricated data, no server required, no hosting costs.
 
 ![Desktop Now view](docs/screenshots/desktop-now.png)
@@ -75,9 +78,11 @@ docker compose -f packaging/docker-compose.yml up -d --build
 
 ## Packaging (Linux)
 
+Prebuilt AppImage: see [Releases](https://github.com/kdsmith18542/SolarSystemNow/releases).
+
 ```bash
-cd packaging
-./build_appimage.sh
+# from the repo root (downloads appimagetool on first run; no FUSE needed)
+sh packaging/build_appimage.sh
 # produces dist/ssnow (PyInstaller bundle) and packaging/Solar_System_Now-x86_64.AppImage
 ```
 

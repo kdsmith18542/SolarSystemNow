@@ -80,11 +80,17 @@ docker compose -f packaging/docker-compose.yml up -d --build
 
 Prebuilt AppImage: see [Releases](https://github.com/kdsmith18542/SolarSystemNow/releases).
 
-Releases are unsigned; each ships a `SHA256SUMS` file — verify with:
+Releases are checksummed and GPG-signed (CI signs when the signing secret is
+configured; `release-signing-key.asc` is attached to each release). Verify:
 
 ```bash
+gpg --import release-signing-key.asc
+gpg --verify SHA256SUMS.asc SHA256SUMS
 sha256sum -c SHA256SUMS
 ```
+
+Key fingerprint: `ACA74DC872549C4EC8FF0DF8D248D42F9842E3EA` (see
+[SECURITY.md](SECURITY.md)).
 
 ```bash
 # from the repo root (downloads appimagetool on first run; no FUSE needed)

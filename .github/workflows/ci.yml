@@ -140,8 +140,30 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: |
           timeout 45 packaging/Solar_System_Now-x86_64.AppImage --help || test $? -eq 124
+      - name: Checksums + GPG signature (signed when the key secret is present)
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.SSNOW_GPG_PRIVATE_KEY }}
+          GPG_KEY_ID: ${{ secrets.SSNOW_GPG_KEY_ID }}
+        run: |
+          cd packaging
+          sha256sum Solar_System_Now-x86_64.AppImage > SHA256SUMS
+          if [ -z "$GPG_PRIVATE_KEY" ]; then
+            echo "::notice::No SSNOW_GPG_PRIVATE_KEY secret; shipping unsigned checksums only"
+            exit 0
+          fi
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          gpg --batch --yes --armor --detach-sign \
+            --local-user "$GPG_KEY_ID" -o SHA256SUMS.asc SHA256SUMS
+          gpg --verify SHA256SUMS.asc SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: Solar_System_Now-x86_64.AppImage
           path: packaging/Solar_System_Now-x86_64.AppImage
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: checksums
+          path: |
+            packaging/SHA256SUMS
+            packaging/SHA256SUMS.asc
+          if-no-files-found: warn
